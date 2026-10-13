@@ -1,0 +1,5 @@
+build/
+.tools/
+*.wav
+*.vst3/
+.DS_Store
