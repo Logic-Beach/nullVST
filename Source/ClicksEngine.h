@@ -48,8 +48,11 @@
    change, crossfade over a few milliseconds. A steady setting stays put.
    process mixes the voices, then the effect chain, then the limiter.
    fxOrder 0 is crush on the voice, then the filter, delay, and compressor.
-   filterPlace 0 filters the tone, so the echo repeats that tone.
-   filterPlace 1 filters the mix, and the repeats pass through it again.
+   The chain numbers choose where the filter sits. Two filters share that
+   place and run in series, the first then the second. The second starts off.
+   filterPlace remains for the stock path: 0 filters the tone, so the echo
+   repeats that tone. 1 filters the mix, and the repeats pass through it again.
+   The plugin leaves it at 0.
    Other orders move crush, the filter, delay, tape colour, and the compressor.
    The limiter sits after the output level. limitDb above 0 leaves the ceiling off.
    limitDist 0 only flattens peaks that cross the ceiling. Higher bends the note into it.
@@ -113,7 +116,7 @@ struct ClickParams
     float subSustain = 0.85f;
     float subRelease = 0.28f;
     int filterType = 0;  // 0 off, 1 lowpass, 2 highpass, 3 bandpass, 4 notch, 5 formant, 6 resonator
-    int filterPlace = 0; // 0 after generation, 1 last, before output. Used when fxOrder is 0.
+    int filterPlace = 0; // stock path only. 0 filters the tone, 1 filters the mix. The panel uses the chain number.
     int fxOrder = 0;     // 0 is the original chain. Used while the slot numbers stay at 1..6.
     int tapeSlot = 0;    // 0 is first. Each effect has its own place in the chain.
     int crushSlot = 1;
@@ -137,6 +140,21 @@ struct ClickParams
     float fSustain = 0.f;
     float fRelease = 0.2f;
     float filtAmt = 0.f;     // filter envelope depth. 0 leaves the cutoff alone
+    int filter2Type = 0; // second filter. 0 is off, so the first filter is the whole path
+    float filter2Hz = 4000.f;
+    float filter2Q = 0.7f;
+    float form2Shift = 1.f;
+    float form2Spread = 1.f;
+    float form2Breath = 0.f;
+    float reso2Damp = 0.f;
+    float reso2Tune = 0.f;
+    float reso2Stack = 0.f;
+    float f2Attack = 0.01f;
+    float f2Decay = 0.18f;
+    float f2Sustain = 0.f;
+    float f2Release = 0.2f;
+    float filt2Amt = 0.f;
+    float filt2Mix = 1.f;    // 1 is the full second filter, once its type is on
     float compThresh = 0.f; // dB. Only peaks above this are squeezed
     float compRatio = 1.f;  // 1 leaves the sound alone
     float compGain = 0.f;   // makeup dB after the squeeze. 0 is unity
@@ -254,14 +272,11 @@ public:
         tapeRing.assign ((size_t) tapeLen, 0.f);
         clearTape();
         resoLen = (int) std::ceil (sampleRate / 40.0) + 8;
-        reso.assign ((size_t) resoLen, 0.f);
-        resoWrite = 0;
-        filtIc1 = 0.f;
-        filtIc2 = 0.f;
-        formIc1[0] = formIc1[1] = formIc1[2] = 0.f;
-        formIc2[0] = formIc2[1] = formIc2[2] = 0.f;
-        resoDull = 0.f;
-        filterReady = false;
+        for (auto& st : band)
+        {
+            st.reso.assign ((size_t) resoLen, 0.f);
+            clearFilt (st);
+        }
         for (int i = 0; i < ClickParams::lfoCount; ++i)
         {
             lfoPhase[i] = 0.f;
@@ -298,14 +313,8 @@ public:
         write = 0;
         delayReady = false;
         clearTape();
-        std::fill (reso.begin(), reso.end(), 0.f);
-        resoWrite = 0;
-        filtIc1 = 0.f;
-        filtIc2 = 0.f;
-        formIc1[0] = formIc1[1] = formIc1[2] = 0.f;
-        formIc2[0] = formIc2[1] = formIc2[2] = 0.f;
-        resoDull = 0.f;
-        filterReady = false;
+        for (auto& st : band)
+            clearFilt (st);
         for (int i = 0; i < ClickParams::lfoCount; ++i)
         {
             lfoPhase[i] = 0.f;
@@ -510,8 +519,11 @@ public:
             voice->fadeLeft = 0;
         retrigFromNote (params);
         voice->beatCell = beatCellNow();
-        filtStage = 0;
-        filtEnv = 0.f;
+        for (auto& st : band)
+        {
+            st.stage = 0;
+            st.env = 0.f;
+        }
         const bool sam = params.wave == 6 || params.wave == 7 || params.voice == 4;
         if (sam)
         {
@@ -532,6 +544,7 @@ public:
             return;
 
         const int filtType = std::clamp (mix.filterType, 0, 6);
+        const int filt2Type = std::clamp (mix.filter2Type, 0, 6);
         const int filtPlace = mix.filterPlace == 1 ? 1 : 0;
         const int fxOrder = std::clamp (mix.fxOrder, 0, 5);
         const int routeSlot[6] = {
@@ -558,6 +571,7 @@ public:
         const int clickStamp = mix.wave * 1000003
             + mix.voice * 97
             + filtType * 13
+            + filt2Type * 67
             + filtPlace * 3
             + fxOrder * 17
             + mix.subMode * 19
@@ -577,6 +591,7 @@ public:
             slewFb = std::clamp (mix.feedback, 0.f, 0.99f);
             slewCrush = std::clamp (mix.crushMix, 0.f, 1.f) * std::clamp (mix.crushLevel, 0.f, 1.f);
             slewFilt = std::clamp (mix.filtMix, 0.f, 1.f);
+            slewFilt2 = std::clamp (mix.filt2Mix, 0.f, 1.f);
             slewComp = std::clamp (mix.compMix, 0.f, 1.f);
             slewSub = std::clamp (mix.subMix, 0.f, 1.f);
             slewWidth = mix.width;
@@ -608,27 +623,38 @@ public:
             smoothedDelay = std::clamp (lfoBaseDelay, 0.f, 16.f) * (float) sampleRate;
             delayReady = true;
         }
-        if (! filterReady)
+        if (! band[0].ready)
         {
-            smoothedCut = std::clamp (lfoBaseCut, 20.f, (float) (sampleRate * 0.45));
-            smoothedQ = std::clamp (lfoBaseQ, 0.3f, 8.f);
-            filterReady = true;
+            band[0].smoothedCut = std::clamp (lfoBaseCut, 20.f, (float) (sampleRate * 0.45));
+            band[0].smoothedQ = std::clamp (lfoBaseQ, 0.3f, 8.f);
+            band[0].ready = true;
+        }
+        if (! band[1].ready)
+        {
+            band[1].smoothedCut = std::clamp (mix.filter2Hz, 20.f, (float) (sampleRate * 0.45));
+            band[1].smoothedQ = std::clamp (mix.filter2Q, 0.3f, 8.f);
+            band[1].ready = true;
         }
 
         followTone();
         noteBass();
 
-        if (filtType != 5)
+        auto park = [] (FiltState& st, int type)
         {
-            formIc1[0] = formIc1[1] = formIc1[2] = 0.f;
-            formIc2[0] = formIc2[1] = formIc2[2] = 0.f;
-        }
-        if (filtType != 6)
-        {
-            std::fill (reso.begin(), reso.end(), 0.f);
-            resoWrite = 0;
-            resoDull = 0.f;
-        }
+            if (type != 5)
+            {
+                st.formIc1[0] = st.formIc1[1] = st.formIc1[2] = 0.f;
+                st.formIc2[0] = st.formIc2[1] = st.formIc2[2] = 0.f;
+            }
+            if (type != 6)
+            {
+                std::fill (st.reso.begin(), st.reso.end(), 0.f);
+                st.resoWrite = 0;
+                st.resoDull = 0.f;
+            }
+        };
+        park (band[0], filtType);
+        park (band[1], filt2Type);
 
         for (int i = 0; i < numSamples; ++i)
         {
@@ -648,6 +674,7 @@ public:
             const float subLvlNow = chase (slewSubLvl, std::clamp (mix.subLevel, 0.f, 1.f));
             const float crushNow = chase (slewCrush, std::clamp (mix.crushMix, 0.f, 1.f) * std::clamp (mix.crushLevel, 0.f, 1.f));
             const float filtMixNow = chase (slewFilt, std::clamp (mix.filtMix, 0.f, 1.f));
+            const float filt2MixNow = chase (slewFilt2, std::clamp (mix.filt2Mix, 0.f, 1.f));
             const float compMixNow = chase (slewComp, std::clamp (mix.compMix, 0.f, 1.f));
             limitLive = chase (slewLimit, mix.limitDb);
             limitDistLive = chase (slewDist, std::clamp (mix.limitDist, 0.f, 1.f));
@@ -655,13 +682,18 @@ public:
             revSizeLive = chase (slewRevSize, std::clamp (mix.revSize, 0.f, 1.f));
             revDampLive = chase (slewRevDamp, std::clamp (mix.revDamp, 0.f, 1.f));
             const float targetDelay = std::clamp (mix.delaySec, 0.f, 16.f) * (float) sampleRate;
-            advanceFiltEnv();
-            const float amt = std::clamp (mix.filtAmt, -1.f, 1.f);
-            float cutHz = mix.filterHz;
-            if (std::abs (amt) > 1.0e-5f)
-                cutHz *= std::pow (2.f, amt * filtEnv * 4.f);
-            const float targetCut = std::clamp (cutHz, 20.f, (float) (sampleRate * 0.45));
+            advanceFiltEnv (band[0], mix.fAttack, mix.fDecay, mix.fSustain, mix.fRelease);
+            advanceFiltEnv (band[1], mix.f2Attack, mix.f2Decay, mix.f2Sustain, mix.f2Release);
+            auto aimedCut = [this] (float hz, float amt, float env)
+            {
+                if (std::abs (amt) > 1.0e-5f)
+                    hz *= std::pow (2.f, amt * env * 4.f);
+                return std::clamp (hz, 20.f, (float) (sampleRate * 0.45));
+            };
+            const float targetCut = aimedCut (mix.filterHz, std::clamp (mix.filtAmt, -1.f, 1.f), band[0].env);
             const float targetQ = std::clamp (mix.filterQ, 0.3f, 8.f);
+            const float targetCut2 = aimedCut (mix.filter2Hz, std::clamp (mix.filt2Amt, -1.f, 1.f), band[1].env);
+            const float targetQ2 = std::clamp (mix.filter2Q, 0.3f, 8.f);
 
             if (mix.sync && mix.restartQuarters > 0.02f)
             {
@@ -767,8 +799,10 @@ public:
             }
             mix.subWidth = subWidthKeep;
 
-            smoothedCut += 0.01f * (targetCut - smoothedCut);
-            smoothedQ += 0.01f * (targetQ - smoothedQ);
+            band[0].smoothedCut += 0.01f * (targetCut - band[0].smoothedCut);
+            band[0].smoothedQ += 0.01f * (targetQ - band[0].smoothedQ);
+            band[1].smoothedCut += 0.01f * (targetCut2 - band[1].smoothedCut);
+            band[1].smoothedQ += 0.01f * (targetQ2 - band[1].smoothedQ);
 
             const float crushAmt = crushNow;
             const float slowBus = std::clamp (mix.slow, 0.05f, 4.f);
@@ -791,13 +825,26 @@ public:
             };
             auto filtBus = [&] (float s)
             {
-                if (filtType <= 0)
-                    return s;
-                if (filtMixNow >= 0.999f)
-                    return applyFilter (s, filtType);
-                if (filtMixNow > 0.0008f)
-                    return s + (applyFilter (s, filtType) - s) * filtMixNow;
-                return s;
+                // Both filters share this chain place. The second follows the first.
+                auto one = [&] (float in, int type, float wet, FiltState& st,
+                                float shift, float spread, float breath,
+                                float tune, float damp, float stack)
+                {
+                    if (type <= 0)
+                        return in;
+                    const float y = applyFilter (in, type, st, shift, spread, breath, tune, damp, stack);
+                    if (wet >= 0.999f)
+                        return y;
+                    if (wet > 0.0008f)
+                        return in + (y - in) * wet;
+                    return in;
+                };
+                s = one (s, filtType, filtMixNow, band[0],
+                         mix.formShift, mix.formSpread, mix.formBreath,
+                         mix.resoTune, mix.resoDamp, mix.resoStack);
+                return one (s, filt2Type, filt2MixNow, band[1],
+                            mix.form2Shift, mix.form2Spread, mix.form2Breath,
+                            mix.reso2Tune, mix.reso2Damp, mix.reso2Stack);
             };
             auto pushDelay = [&] (float into)
             {
@@ -835,14 +882,20 @@ public:
             if (stockRoute && fxOrder != 5)
                 x = tapeBus (x);
 
+            if (filtType == 0)
+            {
+                band[0].ic1 = 0.f;
+                band[0].ic2 = 0.f;
+            }
+            if (filt2Type == 0)
+            {
+                band[1].ic1 = 0.f;
+                band[1].ic2 = 0.f;
+            }
+
             float body = x;
             if (! stockRoute)
             {
-                if (filtType == 0)
-                {
-                    filtIc1 = 0.f;
-                    filtIc2 = 0.f;
-                }
                 glideDelay (targetDelay);
                 const float y = readDelay (smoothedDelay);
                 float sig = x;
@@ -868,12 +921,7 @@ public:
             }
             else if (fxOrder == 0)
             {
-                if (filtType == 0)
-                {
-                    filtIc1 = 0.f;
-                    filtIc2 = 0.f;
-                }
-                else if (filtPlace == 0)
+                if ((filtType > 0 || filt2Type > 0) && filtPlace == 0)
                     x = filtBus (x);
 
                 stamp (x);
@@ -881,7 +929,7 @@ public:
                 glideDelay (targetDelay);
                 const float y = readDelay (smoothedDelay);
                 float mixed = x * dryGain + y;
-                if (filtType > 0 && filtPlace == 1)
+                if ((filtType > 0 || filt2Type > 0) && filtPlace == 1)
                     mixed = filtBus (mixed);
                 // Tone filters once, then the echo copies it. Out filters the mix,
                 // and the repeats pass through that filter again.
@@ -891,11 +939,6 @@ public:
             }
             else
             {
-                if (filtType == 0)
-                {
-                    filtIc1 = 0.f;
-                    filtIc2 = 0.f;
-                }
                 glideDelay (targetDelay);
                 const float y = readDelay (smoothedDelay);
                 float mixed = x;
@@ -1851,21 +1894,53 @@ private:
         monoN = w;
     }
 
-    // Resonant filter. Bandpass and notch stay near unity in the pass band.
-    // Formant is three vowel peaks. Resonator is a tuned ring.
-    float applyFilter (float x, int type)
+    // One filter's memory. The two bands share the chain place and keep their own state.
+    struct FiltState
     {
-        if (type == 5)
-            return shapeFormant (x);
-        if (type == 6)
-            return shapeResonator (x);
-        return shapeFilter (x, type);
+        float ic1 = 0.f;
+        float ic2 = 0.f;
+        float formIc1[3] {};
+        float formIc2[3] {};
+        uint32_t formRng = 1u;
+        float resoDull = 0.f;
+        std::vector<float> reso;
+        int resoWrite = 0;
+        float smoothedCut = 4000.f;
+        float smoothedQ = 0.7f;
+        bool ready = false;
+        int stage = 2;
+        float env = 0.f;
+    };
+
+    void clearFilt (FiltState& st)
+    {
+        std::fill (st.reso.begin(), st.reso.end(), 0.f);
+        st.resoWrite = 0;
+        st.ic1 = 0.f;
+        st.ic2 = 0.f;
+        st.formIc1[0] = st.formIc1[1] = st.formIc1[2] = 0.f;
+        st.formIc2[0] = st.formIc2[1] = st.formIc2[2] = 0.f;
+        st.resoDull = 0.f;
+        st.ready = false;
     }
 
-    float shapeFormant (float x)
+    // Resonant filter. Bandpass and notch stay near unity in the pass band.
+    // Formant is three vowel peaks. Resonator is a tuned ring.
+    float applyFilter (float x, int type, FiltState& st,
+                       float shift, float spread, float breath,
+                       float tune, float damp, float stack)
+    {
+        if (type == 5)
+            return shapeFormant (st, x, shift, spread, breath);
+        if (type == 6)
+            return shapeResonator (st, x, tune, damp, stack);
+        return shapeFilter (st, x, type);
+    }
+
+    float shapeFormant (FiltState& st, float x, float shiftAmt, float spreadAmt, float breathAmt)
     {
         const float span = std::log (2500.f) - std::log (80.f);
-        const float u = std::clamp ((std::log (std::max (80.f, smoothedCut)) - std::log (80.f)) / span, 0.f, 1.f);
+        const float u = std::clamp ((std::log (std::max (80.f, st.smoothedCut)) - std::log (80.f)) / span, 0.f, 1.f);
         const float vowel[4][3] = {
             { 300.f, 870.f, 2240.f },
             { 730.f, 1090.f, 2440.f },
@@ -1875,11 +1950,11 @@ private:
         const float pos = u * 3.f;
         const int a = std::min (2, (int) pos);
         const float t = pos - (float) a;
-        const float q = std::clamp (smoothedQ, 0.5f, 8.f);
+        const float q = std::clamp (st.smoothedQ, 0.5f, 8.f);
         const float k = 1.f / q;
         const float gain[3] = { 1.f, 0.62f, 0.38f };
-        const float shift = std::clamp (mix.formShift, 0.5f, 2.f);
-        const float spread = std::clamp (mix.formSpread, 0.25f, 2.5f);
+        const float shift = std::clamp (shiftAmt, 0.5f, 2.f);
+        const float spread = std::clamp (spreadAmt, 0.25f, 2.5f);
         float peak[3];
         for (int i = 0; i < 3; ++i)
             peak[i] = (vowel[a][i] * (1.f - t) + vowel[a + 1][i] * t) * shift;
@@ -1887,11 +1962,11 @@ private:
         peak[1] = root + (peak[1] - root) * spread;
         peak[2] = root + (peak[2] - root) * spread;
         float excite = x;
-        const float breath = std::clamp (mix.formBreath, 0.f, 1.f);
+        const float breath = std::clamp (breathAmt, 0.f, 1.f);
         if (breath > 0.001f)
         {
-            formRng = formRng * 1664525u + 1013904223u;
-            const float n = ((formRng >> 8) / 16777216.f) * 2.f - 1.f;
+            st.formRng = st.formRng * 1664525u + 1013904223u;
+            const float n = ((st.formRng >> 8) / 16777216.f) * 2.f - 1.f;
             excite += n * breath * 0.45f;
         }
         float y = 0.f;
@@ -1902,53 +1977,53 @@ private:
             const float a1 = 1.f / (1.f + g * (g + k));
             const float a2 = g * a1;
             const float a3 = g * a2;
-            const float v3 = excite - formIc2[i];
-            const float v1 = a1 * formIc1[i] + a2 * v3;
-            const float v2 = formIc2[i] + a2 * formIc1[i] + a3 * v3;
-            formIc1[i] = 2.f * v1 - formIc1[i];
-            formIc2[i] = 2.f * v2 - formIc2[i];
+            const float v3 = excite - st.formIc2[i];
+            const float v1 = a1 * st.formIc1[i] + a2 * v3;
+            const float v2 = st.formIc2[i] + a2 * st.formIc1[i] + a3 * v3;
+            st.formIc1[i] = 2.f * v1 - st.formIc1[i];
+            st.formIc2[i] = 2.f * v2 - st.formIc2[i];
             y += k * v1 * gain[i];
         }
         y *= 0.9f;
         if (! std::isfinite (y))
         {
-            formIc1[0] = formIc1[1] = formIc1[2] = 0.f;
-            formIc2[0] = formIc2[1] = formIc2[2] = 0.f;
+            st.formIc1[0] = st.formIc1[1] = st.formIc1[2] = 0.f;
+            st.formIc2[0] = st.formIc2[1] = st.formIc2[2] = 0.f;
             return 0.f;
         }
         return std::clamp (y, -4.f, 4.f);
     }
 
-    float shapeResonator (float x)
+    float shapeResonator (FiltState& st, float x, float tuneAmt, float dampAmt, float stackAmt)
     {
         if (resoLen < 4)
             return x;
-        const float semis = std::clamp (mix.resoTune, -24.f, 24.f);
-        const float freq = std::clamp (smoothedCut * std::pow (2.f, semis / 12.f),
+        const float semis = std::clamp (tuneAmt, -24.f, 24.f);
+        const float freq = std::clamp (st.smoothedCut * std::pow (2.f, semis / 12.f),
                                        40.f, (float) (sampleRate * 0.45));
         const float delaySamps = std::clamp ((float) sampleRate / freq, 2.f, (float) (resoLen - 3));
-        const float fb = std::clamp (0.25f + (smoothedQ - 0.3f) * 0.09f, 0.2f, 0.96f);
+        const float fb = std::clamp (0.25f + (st.smoothedQ - 0.3f) * 0.09f, 0.2f, 0.96f);
         const int i = (int) delaySamps;
         const float frac = delaySamps - (float) i;
-        auto at = [this] (int back)
+        auto at = [&st, this] (int back)
         {
-            int r = resoWrite - back;
+            int r = st.resoWrite - back;
             while (r < 0)
                 r += resoLen;
-            return reso[(size_t) r];
+            return st.reso[(size_t) r];
         };
         const float delayed = at (i) * (1.f - frac) + at (i + 1) * frac;
         float loop = delayed;
-        const float damp = std::clamp (mix.resoDamp, 0.f, 1.f);
+        const float damp = std::clamp (dampAmt, 0.f, 1.f);
         if (damp > 0.0008f)
         {
             const float hz = std::clamp (7000.f * std::pow (0.06f, damp), 70.f, 8000.f);
             const float c = std::exp (-6.2831853f * hz / (float) sampleRate);
-            resoDull = loop + c * (resoDull - loop);
-            loop = delayed * (1.f - damp) + resoDull * damp;
+            st.resoDull = loop + c * (st.resoDull - loop);
+            loop = delayed * (1.f - damp) + st.resoDull * damp;
         }
         float y = x * (1.f - fb) + loop * fb;
-        const float stack = std::clamp (mix.resoStack, 0.f, 1.f);
+        const float stack = std::clamp (stackAmt, 0.f, 1.f);
         if (stack > 0.001f)
         {
             const float half = std::clamp (delaySamps * 0.5f, 2.f, (float) (resoLen - 3));
@@ -1959,29 +2034,29 @@ private:
         }
         if (! std::isfinite (y))
         {
-            std::fill (reso.begin(), reso.end(), 0.f);
-            resoWrite = 0;
+            std::fill (st.reso.begin(), st.reso.end(), 0.f);
+            st.resoWrite = 0;
             return 0.f;
         }
         y = std::clamp (y, -4.f, 4.f);
-        reso[(size_t) resoWrite] = y;
-        if (++resoWrite >= resoLen)
-            resoWrite = 0;
+        st.reso[(size_t) st.resoWrite] = y;
+        if (++st.resoWrite >= resoLen)
+            st.resoWrite = 0;
         return y;
     }
 
-    float shapeFilter (float v0, int type)
+    float shapeFilter (FiltState& st, float v0, int type)
     {
-        const float g = std::tan (3.14159265f * smoothedCut / (float) sampleRate);
-        const float k = 1.f / std::max (0.3f, smoothedQ);
+        const float g = std::tan (3.14159265f * st.smoothedCut / (float) sampleRate);
+        const float k = 1.f / std::max (0.3f, st.smoothedQ);
         const float a1 = 1.f / (1.f + g * (g + k));
         const float a2 = g * a1;
         const float a3 = g * a2;
-        const float v3 = v0 - filtIc2;
-        const float v1 = a1 * filtIc1 + a2 * v3;
-        const float v2 = filtIc2 + a2 * filtIc1 + a3 * v3;
-        filtIc1 = 2.f * v1 - filtIc1;
-        filtIc2 = 2.f * v2 - filtIc2;
+        const float v3 = v0 - st.ic2;
+        const float v1 = a1 * st.ic1 + a2 * v3;
+        const float v2 = st.ic2 + a2 * st.ic1 + a3 * v3;
+        st.ic1 = 2.f * v1 - st.ic1;
+        st.ic2 = 2.f * v2 - st.ic2;
         float y = v0;
         if (type == 1)      y = v2;
         else if (type == 2) y = v0 - k * v1 - v2;
@@ -1989,8 +2064,8 @@ private:
         else if (type == 4) y = v0 - k * v1;
         if (! std::isfinite (y))
         {
-            filtIc1 = 0.f;
-            filtIc2 = 0.f;
+            st.ic1 = 0.f;
+            st.ic2 = 0.f;
             return 0.f;
         }
         return std::clamp (y, -4.f, 4.f);
@@ -2310,43 +2385,43 @@ private:
         }
     }
 
-    void advanceFiltEnv()
+    void advanceFiltEnv (FiltState& st, float attack, float decay, float sustainLevel, float release)
     {
         bool held = false;
         for (const auto& voice : voices)
             if (voice.active && voice.held)
                 held = true;
-        if (! held && filtStage < 3)
-            filtStage = 3;
-        const float sustain = std::clamp (mix.fSustain, 0.f, 1.f);
-        if (filtStage == 0)
+        if (! held && st.stage < 3)
+            st.stage = 3;
+        const float sustain = std::clamp (sustainLevel, 0.f, 1.f);
+        if (st.stage == 0)
         {
-            filtEnv += 1.f / std::max (1.f, mix.fAttack * (float) sampleRate);
-            if (filtEnv >= 1.f)
+            st.env += 1.f / std::max (1.f, attack * (float) sampleRate);
+            if (st.env >= 1.f)
             {
-                filtEnv = 1.f;
-                filtStage = 1;
+                st.env = 1.f;
+                st.stage = 1;
             }
         }
-        else if (filtStage == 1)
+        else if (st.stage == 1)
         {
             const float span = std::max (0.0001f, 1.f - sustain);
-            filtEnv -= span / std::max (1.f, mix.fDecay * (float) sampleRate);
-            if (filtEnv <= sustain)
+            st.env -= span / std::max (1.f, decay * (float) sampleRate);
+            if (st.env <= sustain)
             {
-                filtEnv = sustain;
-                filtStage = 2;
+                st.env = sustain;
+                st.stage = 2;
             }
         }
-        else if (filtStage == 2)
-            filtEnv = sustain;
+        else if (st.stage == 2)
+            st.env = sustain;
         else
         {
-            filtEnv -= std::max (sustain, filtEnv) / std::max (1.f, mix.fRelease * (float) sampleRate);
-            if (filtEnv <= 0.0008f)
-                filtEnv = 0.f;
+            st.env -= std::max (sustain, st.env) / std::max (1.f, release * (float) sampleRate);
+            if (st.env <= 0.0008f)
+                st.env = 0.f;
         }
-        filtEnv = std::clamp (filtEnv, 0.f, 1.f);
+        st.env = std::clamp (st.env, 0.f, 1.f);
     }
 
     static float bendLin (float base, float lo, float hi, float m)
@@ -2501,18 +2576,8 @@ private:
     int write = 0;
     float smoothedDelay = 0.f;
     bool delayReady = false;
-    float filtIc1 = 0.f;
-    float filtIc2 = 0.f;
-    float formIc1[3] {};
-    float formIc2[3] {};
-    uint32_t formRng = 1u;
-    float resoDull = 0.f;
-    std::vector<float> reso;
+    FiltState band[2];
     int resoLen = 0;
-    int resoWrite = 0;
-    float smoothedCut = 4000.f;
-    float smoothedQ = 0.7f;
-    bool filterReady = false;
     float holdLevel (float x)
     {
         if (mix.compRatio <= 1.001f && std::abs (mix.compGain) < 0.05f)
@@ -2640,6 +2705,7 @@ private:
     float slewFb = 0.f;
     float slewCrush = 1.f;
     float slewFilt = 1.f;
+    float slewFilt2 = 1.f;
     float slewComp = 1.f;
     float slewSub = 0.f;
     float slewWidth = 0.5f;
@@ -2703,8 +2769,6 @@ private:
     float lfoBaseSteps = 5.f;
     float lfoBaseWidth = 0.5f;
     float lfoBaseSamDrag = 1.f;
-    int filtStage = 2;
-    float filtEnv = 0.f;
     int scatterClock = 0;
     int scatterOrigin = 0;     // Repeat counts from here while speed retrig is on
     double syncOriginPpq = 0;  // the beat division counts from here while speed retrig is on

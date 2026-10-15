@@ -31,6 +31,7 @@ private:
     juce::TextButton darkButton;
     void applyTheme();
     void paintFace (juce::Graphics&);
+    void paintShadows (juce::Graphics&);
     void paintInverted (juce::Graphics&);
     void tryMidiLearnFrom (juce::Component* target, const juce::MouseEvent& event);
     void showNote (const juce::String&);
@@ -127,10 +128,12 @@ private:
     std::vector<std::unique_ptr<Knob>> sam;
     std::vector<std::unique_ptr<Knob>> speak;
     std::vector<std::unique_ptr<Knob>> filter;
+    std::vector<std::unique_ptr<Knob>> filter2;
     std::vector<std::unique_ptr<Knob>> output;
     std::vector<std::unique_ptr<Knob>> env;
     std::vector<std::unique_ptr<Knob>> senv;
     std::vector<std::unique_ptr<Knob>> fenv;
+    std::vector<std::unique_ptr<Knob>> fenv2;
     std::vector<std::unique_ptr<Knob>> comp;
     std::vector<std::unique_ptr<Knob>> reverb;
     std::vector<std::unique_ptr<Knob>> wobble;
@@ -162,6 +165,9 @@ private:
     juce::ToggleButton fAttackSync;
     juce::ToggleButton fDecaySync;
     juce::ToggleButton fReleaseSync;
+    juce::ToggleButton f2AttackSync;
+    juce::ToggleButton f2DecaySync;
+    juce::ToggleButton f2ReleaseSync;
     juce::ToggleButton subAttackSync;
     juce::ToggleButton subDecaySync;
     juce::ToggleButton subReleaseSync;
@@ -178,6 +184,9 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> fAttackSyncAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> fDecaySyncAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> fReleaseSyncAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> f2AttackSyncAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> f2DecaySyncAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> f2ReleaseSyncAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> subAttackSyncAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> subDecaySyncAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> subReleaseSyncAttachment;
@@ -190,6 +199,7 @@ private:
     float freeSlow = 1.f;
     TempoHold delayHold, attackHold, decayHold, releaseHold, lfoHold[4];
     TempoHold fAttackHold, fDecayHold, fReleaseHold;
+    TempoHold f2AttackHold, f2DecayHold, f2ReleaseHold;
     TempoHold subAttackHold, subDecayHold, subReleaseHold;
 
     juce::ComboBox waveBox;
@@ -198,7 +208,9 @@ private:
     juce::ComboBox subBox;
     juce::ComboBox subWaveBox;
     juce::ComboBox filtTypeBox;
-    juce::ComboBox filtWhereBox;
+    juce::ComboBox filt2TypeBox;
+    juce::TextButton filtTab[2];
+    int filtPage = 0;
     juce::ComboBox fxOrderBox;
     juce::ComboBox lfoShapeBox[4];
     juce::ComboBox lfoDestBox[4];
@@ -208,7 +220,7 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> subAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> subWaveAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> filtTypeAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> filtWhereAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> filt2TypeAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> fxOrderAttachment;
     juce::ComboBox slotBox[6];
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> slotAttachment[6];
@@ -224,7 +236,7 @@ private:
     juce::Label subLabel;
     juce::Label subWaveLabel;
     juce::Label filtTypeLabel;
-    juce::Label filtWhereLabel;
+    juce::Label filt2TypeLabel;
     juce::Label fxOrderLabel;
     juce::Label lfoShapeLabel[4];
     juce::Label lfoDestLabel[4];

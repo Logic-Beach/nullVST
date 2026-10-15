@@ -94,6 +94,52 @@ namespace
         path.closeSubPath();
         return path;
     }
+
+    // Blurred shadow, 2px down and to the right. The control itself is drawn
+    // afterwards at full size and full opacity.
+    constexpr int kShade = 2;
+
+    bool shadowHits (const juce::Graphics& g, juce::Rectangle<int> area)
+    {
+        return area.intersects (g.getClipBounds().expanded (kShade * 2));
+    }
+
+    void castArt (juce::Graphics& g, const juce::Image& art, juce::Rectangle<float> area,
+                  float rotation, bool flip)
+    {
+        auto bounds = area.getSmallestIntegerContainer();
+        if (! art.isValid() || bounds.isEmpty() || ! shadowHits (g, bounds))
+            return;
+        const int pad = kShade;
+        const int w = juce::jmax (1, bounds.getWidth());
+        const int h = juce::jmax (1, bounds.getHeight());
+        juce::Image stamp (juce::Image::ARGB, w + pad * 2, h + pad * 2, true);
+        {
+            juce::Graphics sg (stamp);
+            auto dest = juce::Rectangle<float> ((float) pad, (float) pad, (float) w, (float) h);
+            const float cx = dest.getCentreX();
+            const float cy = dest.getCentreY();
+            if (flip)
+                sg.addTransform (juce::AffineTransform::scale (-1.f, 1.f, cx, cy));
+            if (rotation != 0.f)
+                sg.addTransform (juce::AffineTransform::rotation (rotation, cx, cy));
+            sg.setColour (juce::Colours::white);
+            sg.drawImage (art, dest, juce::RectanglePlacement::stretchToFit, true);
+        }
+        g.saveState();
+        g.addTransform (juce::AffineTransform::translation ((float) bounds.getX() - (float) pad,
+                                                           (float) bounds.getY() - (float) pad));
+        juce::DropShadow (kPencil, kShade, { kShade, kShade }).drawForImage (g, stamp);
+        g.restoreState();
+    }
+
+    void castRect (juce::Graphics& g, juce::Rectangle<float> area)
+    {
+        auto bounds = area.getSmallestIntegerContainer();
+        if (bounds.isEmpty() || ! shadowHits (g, bounds))
+            return;
+        juce::DropShadow (kPencil, kShade, { kShade, kShade }).drawForRectangle (g, bounds);
+    }
 }
 
 ClicksEditor::Look::Look()
@@ -523,18 +569,18 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     subWaveAttachment = addDrop (subWaveBox, subWaveLabel, "subwave", "shape",
                                  "Shape: sine, square, saw up, saw down, or triangle. The sub has its own width.");
     filtTypeAttachment = addDrop (filtTypeBox, filtTypeLabel, "filttype", "type",
-                                  "Type: Off leaves the path dry. Lowpass, highpass, bandpass, notch, formant, and resonator.");
-    filtWhereAttachment = addDrop (filtWhereBox, filtWhereLabel, "filtwhere", "place",
-                                   "Place: on the first effect order, Tone filters the note so the echo shares it. Out filters the mix, and the repeats pass through it again.");
+                                  "Type: Off leaves the path dry. Lowpass, highpass, bandpass, and Remove. Remove takes out one frequency: Cut is that frequency, and Reso up makes the hole narrower. Formant and resonator follow.");
+    filt2TypeAttachment = addDrop (filt2TypeBox, filt2TypeLabel, "filt2type", "type",
+                                   "Filter 2 type. Off leaves this one dry. Remove takes out one frequency, Cut picks it, Reso up makes the hole narrower. It runs just after filter 1, at the same chain number.");
     fxOrderAttachment = addDrop (fxOrderBox, fxOrderLabel, "fxorder", "order",
-                                 "Order: crush, filter, delay, tape, and the compressor. The first row is the original path, and Place still moves the filter there. The other rows put those effects in the order they are named.");
+                                 "Order: crush, filter, delay, tape, and the compressor. The chain numbers on each effect choose the path. Both filters run at the filter number, one then two.");
     fxOrderBox.setVisible (false);
     fxOrderLabel.setVisible (false);
     const char* slotIds[6] = { "tapeslot", "crushslot", "filtslot", "delayslot", "revslot", "compslot" };
     const char* slotTips[6] = {
         "Tape place in the chain. 1 runs first. Everything before it in the chain gets the warble and the deck colour. Picking a number another effect already has swaps the two.",
         "Crush place in the chain. 1 runs first. Picking a number another effect already has swaps the two.",
-        "Filter place in the chain. 1 runs first. Picking a number another effect already has swaps the two.",
+        "Filter place in the chain. 1 runs first. Both filters run here, filter 1 then filter 2. Picking a number another effect already has swaps the two.",
         "Delay place in the chain. 1 runs first. Picking a number another effect already has swaps the two.",
         "Reverb place in the chain. 1 runs first. Picking a number another effect already has swaps the two.",
         "Compress place in the chain. 1 runs first. The limiter stays last. Picking a number another effect already has swaps the two."
@@ -680,6 +726,18 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
                               "Filter envelope amount. Positive opens the cutoff as the envelope rises. Negative closes it. Zero leaves the cutoff still." } })
         fenv.push_back (addFader (spec.id, spec.name, spec.hint, spec.tip));
 
+    for (auto spec : { Spec { "f2attack", "A", "",
+                              "Filter 2 attack: how fast this filter's envelope opens. Sync steps this through beat divisions." },
+                       Spec { "f2decay", "D", "",
+                              "Filter 2 decay: fall from the top of this envelope down to its sustain. Sync steps this through beat divisions." },
+                       Spec { "f2sustain", "S", "",
+                              "Filter 2 sustain: envelope level while the key is down." },
+                       Spec { "f2release", "R", "",
+                              "Filter 2 release: how this envelope closes after the key comes up. Sync steps this through beat divisions." },
+                       Spec { "f2env", "amt", "",
+                              "Filter 2 envelope amount. Positive opens this cutoff as the envelope rises. Negative closes it. Zero leaves the cutoff still." } })
+        fenv2.push_back (addFader (spec.id, spec.name, spec.hint, spec.tip));
+
     for (auto spec : { Spec { "delay", "delay", "echo time",
                               "Delay: time before the echo returns. Sync steps this through beat divisions, triplets and dotted notes included, from a 32nd-note triplet up to 8 bars." },
                        Spec { "feedback", "feedback", "repeats",
@@ -691,10 +749,10 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
         output.push_back (addKnob (spec.id, spec.name, spec.hint, spec.tip));
 
     // Cut and reso sit in the filters card. They grey out while type is Off.
-    for (auto spec : { Spec { "filtcut", "cut", "hertz",
-                              "Cut: filter frequency. On a formant this walks the vowel. On a resonator this is the ring." },
+    for (auto spec : {                        Spec { "filtcut", "cut", "hertz",
+                              "Cut: filter frequency. On Remove this is the frequency that is taken out. On a formant this walks the vowel. On a resonator this is the ring." },
                        Spec { "filtq", "reso", "sharpness",
-                              "Reso: how hard the filter rings at the cutoff. On a formant this is the vowel bandwidth." },
+                              "Reso: how hard the filter rings at the cutoff. On Remove, higher makes a thinner hole around Cut. On a formant this is the vowel bandwidth." },
                        Spec { "formshift", "shift", "vowel size",
                               "Shift: scales every formant. Lower is a bigger mouth. Higher is smaller." },
                        Spec { "formspread", "spread", "vowel gap",
@@ -708,6 +766,26 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
                        Spec { "resostack", "stack", "octave ring",
                               "Stack: adds a second ring an octave up. Zero is one pitch." } })
         filter.push_back (addKnob (spec.id, spec.name, spec.hint, spec.tip));
+
+    for (auto spec : {                        Spec { "filt2cut", "cut", "hertz",
+                              "Filter 2 cut: frequency of the second filter. On Remove this is the frequency that is taken out. On a formant this walks the vowel. On a resonator this is the ring." },
+                       Spec { "filt2q", "reso", "sharpness",
+                              "Filter 2 reso: how hard the second filter rings at its cutoff. On Remove, higher makes a thinner hole around Cut." },
+                       Spec { "filt2mix", "mix", "dry / wet",
+                              "Filter 2 mix: blend from the dry note to this filter. Full is the whole filter. Zero skips it. Filter 1's blend is the filt fader." },
+                       Spec { "form2shift", "shift", "vowel size",
+                              "Filter 2 shift: scales every formant. Lower is a bigger mouth. Higher is smaller." },
+                       Spec { "form2spread", "spread", "vowel gap",
+                              "Filter 2 spread: pulls the upper formants away from the first. One keeps the written vowel." },
+                       Spec { "form2breath", "breath", "vowel air",
+                              "Filter 2 breath: noise through the vowel. Zero is a clean formant." },
+                       Spec { "reso2damp", "damp", "ring dull",
+                              "Filter 2 damp: dulls the resonator. Zero stays bright." },
+                       Spec { "reso2tune", "ring", "semis",
+                              "Filter 2 ring: moves the resonator in semitones from the cutoff." },
+                       Spec { "reso2stack", "stack", "octave ring",
+                              "Filter 2 stack: adds a second ring an octave up. Zero is one pitch." } })
+        filter2.push_back (addKnob (spec.id, spec.name, spec.hint, spec.tip));
 
     for (int i = 1; i <= 4; ++i)
     {
@@ -742,7 +820,7 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
                        Spec { "crushlevel", "crush", "crush",
                               "Crush: how much of the bit crush is in the output. Full uses the wet knob as set. Zero leaves the note clean." },
                        Spec { "filtmix", "filt", "filter",
-                              "Filter: blend from the dry note to the filtered one. Full is the whole filter. Zero skips it." },
+                              "Filter 1: blend from the dry note to the first filter. Full is the whole filter. Zero skips it. Filter 2 has its own mix on its tab." },
                        Spec { "delaylevel", "delay", "delay",
                               "Delay: how much echo is in the output. Full uses the echo knob as set. Zero leaves the repeats out." },
                        Spec { "compmix", "comp", "compress",
@@ -793,6 +871,21 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
         button.addMouseListener (this, true);
         addAndMakeVisible (button);
     };
+    for (int i = 0; i < 2; ++i)
+    {
+        auto& tab = filtTab[i];
+        tab.setButtonText (juce::String (i + 1));
+        tab.setClickingTogglesState (false);
+        tab.setColour (juce::TextButton::buttonOnColourId, kPencil);
+        tab.setColour (juce::TextButton::textColourOnId, kPaper);
+        styleButton (tab, "Filter " + juce::String (i + 1) + ". Both keep running. 1 is first, then 2.");
+        tab.onClick = [this, i]
+        {
+            filtPage = i;
+            resized();
+            refreshFilter();
+        };
+    }
     initButton.setButtonText ("init");
     saveButton.setButtonText ("save");
     loadButton.setButtonText ("load");
@@ -865,7 +958,7 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     sayBox.setColour (juce::TextEditor::textColourId, kPencil);
     sayBox.setColour (juce::TextEditor::outlineColourId, kPencil);
     sayBox.setColour (juce::TextEditor::focusedOutlineColourId, kPencil);
-    sayBox.setTooltip ("Say: the line the speech voice speaks. Press return to lock it. A held note follows the line. A line that will not fit is refused, and the previous line stays.");
+    sayBox.setTooltip ("Say: the line the speech voice speaks. Digits are read as numbers. Press return to lock it. A held note follows the line. A line that will not fit is refused, and the previous line stays.");
     sayBox.addMouseListener (this, true);
     sayBox.onTextChange = [this]
     {
@@ -921,6 +1014,9 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     fAttackSyncAttachment = addTick (fAttackSync, "fattacksync", "Sync: filter attack steps through beat divisions.");
     fDecaySyncAttachment = addTick (fDecaySync, "fdecaysync", "Sync: filter decay steps through beat divisions.");
     fReleaseSyncAttachment = addTick (fReleaseSync, "freleasesync", "Sync: filter release steps through beat divisions.");
+    f2AttackSyncAttachment = addTick (f2AttackSync, "f2attacksync", "Sync: filter 2 attack steps through beat divisions.");
+    f2DecaySyncAttachment = addTick (f2DecaySync, "f2decaysync", "Sync: filter 2 decay steps through beat divisions.");
+    f2ReleaseSyncAttachment = addTick (f2ReleaseSync, "f2releasesync", "Sync: filter 2 release steps through beat divisions.");
     subAttackSyncAttachment = addTick (subAttackSync, "subattacksync", "Sync: sub attack steps through beat divisions. Off, the fader is seconds.");
     subDecaySyncAttachment = addTick (subDecaySync, "subdecaysync", "Sync: sub decay steps through beat divisions. Off, the fader is seconds.");
     subReleaseSyncAttachment = addTick (subReleaseSync, "subreleasesync", "Sync: sub release steps through beat divisions. Off, the fader is seconds.");
@@ -953,6 +1049,9 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     armPair (fAttackSync);
     armPair (fDecaySync);
     armPair (fReleaseSync);
+    armPair (f2AttackSync);
+    armPair (f2DecaySync);
+    armPair (f2ReleaseSync);
     armPair (subAttackSync);
     armPair (subDecaySync);
     armPair (subReleaseSync);
@@ -963,6 +1062,20 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     outMeter.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
     outMeter.setInterceptsMouseClicks (true, false);
     addAndMakeVisible (outMeter);
+
+    for (auto* child : getChildren())
+    {
+        if (auto* slider = dynamic_cast<juce::Slider*> (child))
+            slider->onValueChange = [this, slider]
+            {
+                repaint (slider->getBoundsInParent().expanded (8));
+            };
+        else if (auto* button = dynamic_cast<juce::Button*> (child))
+            button->onStateChange = [this, button]
+            {
+                repaint (button->getBoundsInParent().expanded (8));
+            };
+    }
 
     setResizable (false, false);
     refreshSam();
@@ -1016,7 +1129,10 @@ ClicksEditor::~ClicksEditor()
     subBox.setLookAndFeel (nullptr);
     subWaveBox.setLookAndFeel (nullptr);
     filtTypeBox.setLookAndFeel (nullptr);
-    filtWhereBox.setLookAndFeel (nullptr);
+    filt2TypeBox.setLookAndFeel (nullptr);
+    filt2TypeLabel.setLookAndFeel (nullptr);
+    for (int i = 0; i < 2; ++i)
+        filtTab[i].setLookAndFeel (nullptr);
     fxOrderBox.setLookAndFeel (nullptr);
     fxOrderLabel.setLookAndFeel (nullptr);
     for (int i = 0; i < 6; ++i)
@@ -1026,6 +1142,9 @@ ClicksEditor::~ClicksEditor()
     fAttackSync.setLookAndFeel (nullptr);
     fDecaySync.setLookAndFeel (nullptr);
     fReleaseSync.setLookAndFeel (nullptr);
+    f2AttackSync.setLookAndFeel (nullptr);
+    f2DecaySync.setLookAndFeel (nullptr);
+    f2ReleaseSync.setLookAndFeel (nullptr);
     subAttackSync.setLookAndFeel (nullptr);
     subDecaySync.setLookAndFeel (nullptr);
     subReleaseSync.setLookAndFeel (nullptr);
@@ -1035,7 +1154,7 @@ ClicksEditor::~ClicksEditor()
     lfoDestLabel[1].setLookAndFeel (nullptr);
     sayLabel.setLookAndFeel (nullptr);
     keyboard.setLookAndFeel (nullptr);
-    for (auto* group : { &generator, &sam, &speak, &filter, &output, &env, &senv, &fenv, &comp, &reverb, &wobble, &mix, &lfo })
+    for (auto* group : { &generator, &sam, &speak, &filter, &filter2, &output, &env, &senv, &fenv, &fenv2, &comp, &reverb, &wobble, &mix, &lfo })
         for (auto& knob : *group)
             if (knob != nullptr)
             {
@@ -1101,7 +1220,9 @@ void ClicksEditor::choosePreset (int index)
     clicks.applyFactoryPreset (index);
     presetName = clicks.apvts.state.getProperty ("preset").toString();
     sayBox.setText (clicks.samText(), juce::dontSendNotification);
-    showNote (clicks.lockSpeech());
+    clicks.lockSpeech (false);
+    status.clear();
+    showPreset();
 }
 
 void ClicksEditor::stepPreset (int delta)
@@ -1405,6 +1526,78 @@ void ClicksEditor::paintInverted (juce::Graphics& g)
                    (int) std::lround ((float) clip.getY() * scale));
 }
 
+void ClicksEditor::paintShadows (juce::Graphics& g)
+{
+    for (auto* child : getChildren())
+    {
+        if (child == nullptr || ! child->isVisible() || child == &presetBox)
+            continue;
+        if (auto* slider = dynamic_cast<juce::Slider*> (child))
+        {
+            auto layout = look.getSliderLayout (*slider);
+            const auto origin = slider->getPosition().toFloat();
+            if (slider->isRotary())
+            {
+                auto local = layout.sliderBounds.toFloat();
+                const float side = juce::jmin (local.getWidth(), local.getHeight());
+                auto plate = local.withSizeKeepingCentre (side, side) + origin;
+                const int art = (int) slider->getProperties().getWithDefault ("face", 0);
+                if (art < 0 || art >= 9 || ! look.knob[art].isValid())
+                    continue;
+                float pos = (float) slider->valueToProportionOfLength (slider->getValue());
+                const float drive = (float) slider->getProperties().getWithDefault ("lfoDrive", 0.0);
+                pos = juce::jlimit (0.f, 1.f, pos + drive * 0.5f);
+                const auto spin = slider->getRotaryParameters();
+                const float rot = (pos - 0.5f) * (spin.endAngleRadians - spin.startAngleRadians);
+                castArt (g, look.knob[art], plate, rot, false);
+            }
+            else if (look.faderCap.isValid())
+            {
+                auto track = layout.sliderBounds;
+                auto area = track.toFloat().reduced (2.f);
+                const bool vertical = slider->isVertical();
+                const float prop = (float) slider->valueToProportionOfLength (slider->getValue());
+                const float drive = (float) slider->getProperties().getWithDefault ("lfoDrive", 0.0);
+                const float shown = juce::jlimit (0.f, 1.f, prop + drive * 0.5f);
+                const float travel = vertical ? (float) track.getHeight() : (float) track.getWidth();
+                float sliderPos = (vertical ? (float) track.getY() : (float) track.getX())
+                                + (vertical ? 1.f - prop : prop) * travel;
+                const float delta = (shown - prop) * (vertical ? area.getHeight() : area.getWidth());
+                sliderPos += vertical ? -delta : delta;
+                const float cap = vertical ? area.getWidth()
+                                           : juce::jmin (area.getHeight() * 1.2f, 34.f);
+                auto head = vertical
+                    ? juce::Rectangle<float> (area.getX(), sliderPos - cap * 0.5f, area.getWidth(), cap)
+                    : juce::Rectangle<float> (sliderPos - cap * 0.5f, area.getY(), cap, area.getHeight());
+                castArt (g, look.faderCap, head + origin, 0.f, false);
+            }
+        }
+        else if (auto* box = dynamic_cast<juce::ComboBox*> (child))
+        {
+            if (look.barFill.isValid())
+                castArt (g, look.barFill, box->getBounds().toFloat(), 0.f, false);
+            else
+                castRect (g, box->getBounds().toFloat());
+        }
+        else if (auto* toggle = dynamic_cast<juce::ToggleButton*> (child))
+        {
+            const bool pair = (int) toggle->getProperties().getWithDefault ("pair", 0) != 0;
+            const bool flipped = pair ? ! toggle->getToggleState() : toggle->getToggleState();
+            if (look.switchArt.isValid())
+                castArt (g, look.switchArt, toggle->getBounds().toFloat().reduced (0.5f), 0.f, flipped);
+            else
+                castRect (g, toggle->getBounds().toFloat());
+        }
+        else if (dynamic_cast<juce::TextButton*> (child) != nullptr
+                 || dynamic_cast<juce::TextEditor*> (child) != nullptr)
+        {
+            castRect (g, child->getBounds().toFloat());
+        }
+    }
+    if (presetBox.isVisible())
+        castRect (g, presetBox.getBounds().toFloat());
+}
+
 void ClicksEditor::paint (juce::Graphics& g)
 {
     if (dark)
@@ -1421,6 +1614,8 @@ void ClicksEditor::paintFace (juce::Graphics& g)
         g.drawImage (field, getLocalBounds().toFloat(), juce::RectanglePlacement::fillDestination);
     else
         g.fillAll (juce::Colours::black);
+
+    paintShadows (g);
 
     if (! scopePanel.isEmpty())
     {
@@ -1524,7 +1719,7 @@ void ClicksEditor::paintFace (juce::Graphics& g)
     };
     const int wavePick = (int) std::lround (clicks.apvts.getRawParameterValue ("wave")->load());
     const bool samOn = wavePick >= 6;
-    const int filtType = (int) clicks.apvts.getRawParameterValue ("filttype")->load();
+    const int filtType = (int) clicks.apvts.getRawParameterValue (filtPage == 0 ? "filttype" : "filt2type")->load();
     auto frame = [&] (juce::Rectangle<int> r)
     {
         if (r.isEmpty())
@@ -1597,21 +1792,20 @@ void ClicksEditor::paintFace (juce::Graphics& g)
     const int subArt = subPickArt >= 0 && subPickArt < 5 ? subArtMap[subPickArt] : -1;
     drawWave (wavePlate, mainArt, wavePickArt == 2);
     drawWave (subWavePlate, subArt, subPickArt == 3);
-    auto routed = [] (juce::Rectangle<int> r) { return r.withTrimmedRight (56); };
-    heading (routed (playTag), "tape", 0.9f, 22.f);
+    heading (playTag, "tape", 0.9f, 22.f);
     heading (lfoTag, "lfo", 0.9f, 22.f);
     heading (samTag, wavePick == 7 ? "speak" : "sam", samOn ? 0.9f : 0.35f);
     heading (subTag, "sub oscillator", 0.9f, 22.f);
-    heading (routed (crushTag), "crush", 0.9f, 22.f);
+    heading (crushTag, "crush", 0.9f, 22.f);
     heading (envTag, "source", 0.9f);
     heading (subEnvTag, "sub", 0.9f);
-    heading (routed (filtTag), "filter", 0.9f);
+    heading (filtTag, "filter", 0.9f);
     heading (formantTag, "formant", filtType == 5 ? 0.9f : 0.35f);
     heading (ringTag, "resonator", filtType == 6 ? 0.9f : 0.35f);
     heading (filtEnvTag, "env", 0.9f);
-    heading (routed (delayTag), "delay", 0.9f);
-    heading (routed (revTag), "reverb", 0.9f);
-    heading (routed (compTag), "compress", 0.9f);
+    heading (delayTag, "delay", 0.9f);
+    heading (revTag, "reverb", 0.9f);
+    heading (compTag, "compress", 0.9f);
     auto holdPlate = [&] (juce::Rectangle<int> r)
     {
         if (r.isEmpty())
@@ -1976,13 +2170,17 @@ void ClicksEditor::resized()
         auto box = filtFrame.reduced (4, 2);
         auto envCol = box.removeFromRight (230);
         filtEnvTag = envCol.removeFromTop (22);
+        auto envBody = envCol;
         layFlat (fenv, envCol, &fAttackSync, &fDecaySync, &fReleaseSync, &filtHoldPlate);
+        layFlat (fenv2, envBody, &f2AttackSync, &f2DecaySync, &f2ReleaseSync, &filtHoldPlate);
         filtTag = box.removeFromTop (22);
         auto modes = box.removeFromTop (dropH);
+        auto modes2 = modes;
         placeDrop (filtTypeLabel, filtTypeBox, modes.removeFromLeft (140));
-        modes.removeFromLeft (4);
-        placeDrop (filtWhereLabel, filtWhereBox, modes.removeFromLeft (140));
-        placeTight (filter, 0, 2, 110, box);
+        placeDrop (filt2TypeLabel, filt2TypeBox, modes2.removeFromLeft (140));
+        auto cutRow = box;
+        placeTight (filter, 0, 2, 110, cutRow);
+        placeTight (filter2, 0, 3, 100, box);
     }
     {
         auto row = filt.removeFromTop (pairH);
@@ -1993,12 +2191,16 @@ void ClicksEditor::resized()
         {
             auto box = formFrame.reduced (4, 2);
             formantTag = box.removeFromTop (22);
-            placeTight (filter, 2, 3, 100, box);
+            auto formRow = box;
+            placeTight (filter, 2, 3, 100, formRow);
+            placeTight (filter2, 3, 3, 100, box);
         }
         {
             auto box = ringFrame.reduced (4, 2);
             ringTag = box.removeFromTop (22);
-            placeTight (filter, 5, 3, 100, box);
+            auto ringRow = box;
+            placeTight (filter, 5, 3, 100, ringRow);
+            placeTight (filter2, 6, 3, 100, box);
         }
     }
     crushFrame = filt.removeFromTop (crushH);
@@ -2074,16 +2276,55 @@ void ClicksEditor::resized()
         meterBounds = meterCol.withTrimmedTop (16).reduced (8, 2);
         placeTight (comp, 0, 5, 86, box);
     }
-        auto pinSlot = [] (juce::ComboBox& box, juce::Rectangle<int> tag)
+        auto pinSlot = [this] (juce::ComboBox& box, juce::Rectangle<int> tag, const juce::String& title)
         {
-            box.setBounds (tag.removeFromRight (52).reduced (0, 1));
+            const int textW = juce::GlyphArrangement::getStringWidthInt (chicagoFont (22.f), title);
+            const int slotW = 52;
+            int x = tag.getX() + textW + 6;
+            if (x + slotW > tag.getRight())
+                x = juce::jmax (tag.getX(), tag.getRight() - slotW);
+            box.setBounds (x, tag.getY(), slotW, tag.getHeight());
         };
-        pinSlot (slotBox[0], playTag);
-        pinSlot (slotBox[2], filtTag);
-        pinSlot (slotBox[1], crushTag);
-        pinSlot (slotBox[3], delayTag);
-        pinSlot (slotBox[4], revTag);
-        pinSlot (slotBox[5], compTag);
+        pinSlot (slotBox[0], playTag, "tape");
+        pinSlot (slotBox[2], filtTag, "filter");
+        {
+            const auto slot = slotBox[2].getBounds();
+            int x = slot.getRight() + 8;
+            for (int i = 0; i < 2; ++i)
+            {
+                filtTab[i].setBounds (x, filtTag.getY(), 28, filtTag.getHeight());
+                filtTab[i].setToggleState (filtPage == i, juce::dontSendNotification);
+                x += 32;
+            }
+        }
+        auto showKnob = [] (std::vector<std::unique_ptr<Knob>>& knobs, bool on)
+        {
+            for (auto& knob : knobs)
+                if (knob != nullptr)
+                {
+                    knob->slider.setVisible (on);
+                    knob->label.setVisible (on);
+                }
+        };
+        const bool page1 = filtPage == 0;
+        showKnob (filter, page1);
+        showKnob (filter2, ! page1);
+        showKnob (fenv, page1);
+        showKnob (fenv2, ! page1);
+        filtTypeLabel.setVisible (page1);
+        filtTypeBox.setVisible (page1);
+        filt2TypeLabel.setVisible (! page1);
+        filt2TypeBox.setVisible (! page1);
+        fAttackSync.setVisible (page1);
+        fDecaySync.setVisible (page1);
+        fReleaseSync.setVisible (page1);
+        f2AttackSync.setVisible (! page1);
+        f2DecaySync.setVisible (! page1);
+        f2ReleaseSync.setVisible (! page1);
+        pinSlot (slotBox[1], crushTag, "crush");
+        pinSlot (slotBox[3], delayTag, "delay");
+        pinSlot (slotBox[4], revTag, "reverb");
+        pinSlot (slotBox[5], compTag, "compress");
     }
 
     {
@@ -2241,10 +2482,6 @@ void ClicksEditor::routeSlot (int index)
 
 void ClicksEditor::refreshFilter()
 {
-    const int type = (int) clicks.apvts.getRawParameterValue ("filttype")->load();
-    const bool on = type > 0;
-    const bool form = type == 5;
-    const bool ring = type == 6;
     auto fadeKnob = [] (Knob& knob, bool live)
     {
         const float fade = live ? 1.f : 0.38f;
@@ -2255,34 +2492,40 @@ void ClicksEditor::refreshFilter()
         knob.label.setAlpha (fade);
         knob.hint.setAlpha (fade);
     };
-    const int order = (int) clicks.apvts.getRawParameterValue ("fxorder")->load();
-    auto slotAt = [this] (const char* id)
+    auto fadeAt = [&] (std::vector<std::unique_ptr<Knob>>& knobs, int index, bool live)
     {
-        return (int) clicks.apvts.getRawParameterValue (id)->load();
+        if (index < 0 || index >= (int) knobs.size() || knobs[(size_t) index] == nullptr)
+            return;
+        fadeKnob (*knobs[(size_t) index], live);
     };
-    const bool stock = slotAt ("tapeslot") == 0 && slotAt ("crushslot") == 1 && slotAt ("filtslot") == 2
-        && slotAt ("delayslot") == 3 && slotAt ("revslot") == 4 && slotAt ("compslot") == 5;
-    const bool placeLive = on && order == 0 && stock;
-    filtWhereLabel.setEnabled (placeLive);
-    filtWhereLabel.setAlpha (placeLive ? 1.f : 0.38f);
-    filtWhereBox.setEnabled (placeLive);
-    filtWhereBox.setAlpha (placeLive ? 1.f : 0.38f);
-    if (filter.size() > 1 && filter[0] != nullptr)
+    auto dress = [&] (std::vector<std::unique_ptr<Knob>>& knobs, int type, int form0, int ring0)
     {
-        fadeKnob (*filter[0], on);
-        filter[0]->hint.setText (form ? "vowel" : ring ? "ring" : "hertz", juce::dontSendNotification);
-    }
-    if (filter.size() > 1 && filter[1] != nullptr)
-        fadeKnob (*filter[1], on);
-    for (int i : { 2, 3, 4 })
-        if (i < (int) filter.size() && filter[(size_t) i] != nullptr)
-            fadeKnob (*filter[(size_t) i], form);
-    for (int i : { 5, 6, 7 })
-        if (i < (int) filter.size() && filter[(size_t) i] != nullptr)
-            fadeKnob (*filter[(size_t) i], ring);
-    if (type != filtTypeShown)
+        const bool on = type > 0;
+        const bool form = type == 5;
+        const bool ring = type == 6;
+        fadeAt (knobs, 0, on);
+        fadeAt (knobs, 1, on);
+        if (! knobs.empty() && knobs[0] != nullptr)
+            knobs[0]->hint.setText (form ? "vowel" : ring ? "ring" : type == 4 ? "reject" : "hertz",
+                                    juce::dontSendNotification);
+        if (knobs.size() > 1 && knobs[1] != nullptr && type == 4)
+            knobs[1]->hint.setText ("narrow", juce::dontSendNotification);
+        else if (knobs.size() > 1 && knobs[1] != nullptr)
+            knobs[1]->hint.setText ("sharpness", juce::dontSendNotification);
+        for (int i = 0; i < 3; ++i)
+            fadeAt (knobs, form0 + i, form);
+        for (int i = 0; i < 3; ++i)
+            fadeAt (knobs, ring0 + i, ring);
+    };
+    const int type = (int) clicks.apvts.getRawParameterValue ("filttype")->load();
+    const int type2 = (int) clicks.apvts.getRawParameterValue ("filt2type")->load();
+    dress (filter, type, 2, 5);
+    dress (filter2, type2, 3, 6);
+    fadeAt (filter2, 2, true);
+    const int shown = filtPage == 0 ? type : type2;
+    if (shown != filtTypeShown)
     {
-        filtTypeShown = type;
+        filtTypeShown = shown;
         repaint (formantTag);
         repaint (ringTag);
     }
@@ -2585,6 +2828,12 @@ void ClicksEditor::timerCallback()
         snapDivision (*fenv[0], "fattack", "fattacksync", fAttackHold, {});
         snapDivision (*fenv[1], "fdecay", "fdecaysync", fDecayHold, {});
         snapDivision (*fenv[3], "frelease", "freleasesync", fReleaseHold, {});
+    if (fenv2.size() > 3 && fenv2[0] != nullptr && fenv2[1] != nullptr && fenv2[3] != nullptr)
+    {
+        snapDivision (*fenv2[0], "f2attack", "f2attacksync", f2AttackHold, {});
+        snapDivision (*fenv2[1], "f2decay", "f2decaysync", f2DecayHold, {});
+        snapDivision (*fenv2[3], "f2release", "f2releasesync", f2ReleaseHold, {});
+    }
     }
     if (lfo.size() >= 4 && lfo[0] != nullptr && lfo[2] != nullptr)
     {
@@ -2597,7 +2846,7 @@ void ClicksEditor::timerCallback()
     }
     refreshLfo();
     if (clicks.takeSpeechRequest())
-        showNote (clicks.lockSpeech (true));
+        clicks.lockSpeech (false);
     if (clicks.samNeedsRender())
     {
         const auto now = juce::Time::getMillisecondCounter();
@@ -2674,7 +2923,7 @@ void ClicksEditor::animateLfos()
         if (std::abs (prev - next[i]) < 0.004f)
             continue;
         props.set ("lfoDrive", next[i]);
-        knobs[i]->slider.repaint();
+        repaint (knobs[i]->slider.getBoundsInParent().expanded (8));
     }
 }
 
@@ -2745,7 +2994,8 @@ void ClicksEditor::loadPreset()
                               if (presetName.isEmpty())
                                   presetName = file.getFileNameWithoutExtension();
                               clicks.apvts.state.setProperty ("preset", presetName, nullptr);
-                              showNote ("Loaded " + file.getFileName() + ". " + clicks.lockSpeech());
+                              clicks.lockSpeech (false);
+                              showNote ("Loaded " + file.getFileName());
                           });
 }
 

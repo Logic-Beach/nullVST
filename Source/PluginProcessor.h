@@ -76,7 +76,7 @@ private:
     X(attack) X(attacksync) X(decay) X(decaysync) X(sustain) X(release) X(releasesync) \
     X(submode) X(subwave) X(subtune) X(subfine) X(submix) X(subwidth) \
     X(subattack) X(subattacksync) X(subdecay) X(subdecaysync) X(subsustain) X(subrelease) X(subreleasesync) \
-    X(filttype) X(filtwhere) X(fxorder) \
+    X(filttype) X(fxorder) \
     X(tapeslot) X(crushslot) X(filtslot) X(delayslot) X(revslot) X(compslot) \
     X(revsize) X(revdamp) X(revmix) X(filtcut) X(filtq) \
     X(formshift) X(formspread) X(formbreath) X(resodamp) X(resotune) X(resostack) \
@@ -87,7 +87,11 @@ private:
     X(lfo2shape) X(lfo2rate) X(lfo2sync) X(lfo2depth) X(lfo2dest) \
     X(lfo3shape) X(lfo3rate) X(lfo3sync) X(lfo3depth) X(lfo3dest) \
     X(lfo4shape) X(lfo4rate) X(lfo4sync) X(lfo4depth) X(lfo4dest) \
-    X(lfo1retrig) X(lfo2retrig) X(lfo3retrig) X(lfo4retrig) X(delayretrig) X(slowretrig)
+    X(lfo1retrig) X(lfo2retrig) X(lfo3retrig) X(lfo4retrig) X(delayretrig) X(slowretrig) \
+    X(filt2type) X(filt2cut) X(filt2q) \
+    X(form2shift) X(form2spread) X(form2breath) X(reso2damp) X(reso2tune) X(reso2stack) \
+    X(f2attack) X(f2attacksync) X(f2decay) X(f2decaysync) X(f2sustain) X(f2release) X(f2releasesync) X(f2env) \
+    X(filt2mix)
     enum Tap
     {
 #define NG_TAP_ENUM(n) tap_##n,

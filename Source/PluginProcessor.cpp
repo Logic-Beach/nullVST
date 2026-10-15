@@ -137,7 +137,7 @@ ClickParams ClicksProcessor::readParams() const
     params.subSustain = tap (tap_subsustain);
     params.subRelease = tempoSeconds (tap_subrelease, tap_subreleasesync);
     params.filterType = (int) tap (tap_filttype);
-    params.filterPlace = (int) tap (tap_filtwhere);
+    params.filterPlace = 0;
     params.fxOrder = (int) tap (tap_fxorder);
     params.tapeSlot = (int) tap (tap_tapeslot);
     params.crushSlot = (int) tap (tap_crushslot);
@@ -161,6 +161,21 @@ ClickParams ClicksProcessor::readParams() const
     params.fSustain = tap (tap_fsustain);
     params.fRelease = tempoSeconds (tap_frelease, tap_freleasesync);
     params.filtAmt = tap (tap_fenv);
+    params.filter2Type = (int) tap (tap_filt2type);
+    params.filter2Hz = tap (tap_filt2cut);
+    params.filter2Q = tap (tap_filt2q);
+    params.form2Shift = tap (tap_form2shift);
+    params.form2Spread = tap (tap_form2spread);
+    params.form2Breath = tap (tap_form2breath);
+    params.reso2Damp = tap (tap_reso2damp);
+    params.reso2Tune = tap (tap_reso2tune);
+    params.reso2Stack = tap (tap_reso2stack);
+    params.f2Attack = tempoSeconds (tap_f2attack, tap_f2attacksync);
+    params.f2Decay = tempoSeconds (tap_f2decay, tap_f2decaysync);
+    params.f2Sustain = tap (tap_f2sustain);
+    params.f2Release = tempoSeconds (tap_f2release, tap_f2releasesync);
+    params.filt2Amt = tap (tap_f2env);
+    params.filt2Mix = tap (tap_filt2mix);
     params.compThresh = tap (tap_compthresh);
     params.compRatio = tap (tap_compratio);
     params.compGain = tap (tap_compgain);
@@ -392,7 +407,8 @@ void ClicksProcessor::setSamText (const juce::String& raw)
     for (auto c : raw)
     {
         const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-            || c == ' ' || c == '\'' || c == '.' || c == ',' || c == '?' || c == '!';
+            || (c >= '0' && c <= '9')
+            || c == ' ' || c == '\'' || c == '.' || c == ',' || c == '?' || c == '!' || c == '-';
         if (ok)
             cleaned += c;
         if (cleaned.length() >= 40)
@@ -951,13 +967,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClicksProcessor::createLayou
     layout.add (std::make_unique<AudioParameterChoice> (
         ParameterID { "filttype", 1 },
         "Type",
-        StringArray { "Off", "Lowpass", "Highpass", "Bandpass", "Notch", "Formant", "Resonator" },
-        0,
-        choice));
-    layout.add (std::make_unique<AudioParameterChoice> (
-        ParameterID { "filtwhere", 1 },
-        "Where",
-        StringArray { "After generation", "Before output" },
+        StringArray { "Off", "Lowpass", "Highpass", "Bandpass", "Remove", "Formant", "Resonator" },
         0,
         choice));
     layout.add (std::make_unique<AudioParameterChoice> (
@@ -1172,6 +1182,63 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClicksProcessor::createLayou
             0,
             choice));
     }
+    layout.add (std::make_unique<AudioParameterChoice> (
+        ParameterID { "filt2type", 1 },
+        "Filter 2 type",
+        StringArray { "Off", "Lowpass", "Highpass", "Bandpass", "Remove", "Formant", "Resonator" },
+        0,
+        choice));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "filt2cut", 1 }, "Filter 2 cut",
+        NormalisableRange<float> (40.f, 16000.f, 1.f, 0.3f), 4000.f, hertz));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "filt2q", 1 }, "Filter 2 reso",
+        NormalisableRange<float> (0.3f, 8.f, 0.01f), 0.7f, live));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "form2shift", 1 }, "Filter 2 shift",
+        NormalisableRange<float> (0.5f, 2.f, 0.01f), 1.f, live));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "form2spread", 1 }, "Filter 2 spread",
+        NormalisableRange<float> (0.25f, 2.5f, 0.01f), 1.f, live));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "form2breath", 1 }, "Filter 2 breath",
+        NormalisableRange<float> (0.f, 1.f, 0.01f), 0.f, live));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "reso2damp", 1 }, "Filter 2 damp",
+        NormalisableRange<float> (0.f, 1.f, 0.01f), 0.f, live));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "reso2tune", 1 }, "Filter 2 ring",
+        NormalisableRange<float> (-24.f, 24.f, 0.1f), 0.f, live));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "reso2stack", 1 }, "Filter 2 stack",
+        NormalisableRange<float> (0.f, 1.f, 0.01f), 0.f, live));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "f2attack", 1 }, "Filter 2 attack",
+        timeRange, 0.01f, seconds));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "f2decay", 1 }, "Filter 2 decay",
+        timeRange, 0.18f, seconds));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "f2sustain", 1 }, "Filter 2 sustain",
+        NormalisableRange<float> (0.f, 1.f, 0.01f), 0.f, live));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "f2release", 1 }, "Filter 2 release",
+        timeRange, 0.2f, seconds));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "f2env", 1 }, "Filter 2 envelope",
+        NormalisableRange<float> (-1.f, 1.f, 0.01f), 0.f, live));
+    layout.add (std::make_unique<AudioParameterBool> (
+        ParameterID { "f2attacksync", 1 }, "Filter 2 attack sync", false,
+        AudioParameterBoolAttributes().withAutomatable (true)));
+    layout.add (std::make_unique<AudioParameterBool> (
+        ParameterID { "f2decaysync", 1 }, "Filter 2 decay sync", false,
+        AudioParameterBoolAttributes().withAutomatable (true)));
+    layout.add (std::make_unique<AudioParameterBool> (
+        ParameterID { "f2releasesync", 1 }, "Filter 2 release sync", false,
+        AudioParameterBoolAttributes().withAutomatable (true)));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "filt2mix", 1 }, "Filter 2",
+        NormalisableRange<float> (0.f, 1.f, 0.01f), 1.f, live));
     return layout;
 }
 

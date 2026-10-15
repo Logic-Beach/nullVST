@@ -172,9 +172,16 @@ set_target_properties(espeak_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_executable(espeak_data_bin ${espeakng_SOURCE_DIR}/src/espeak-ng.c)
 target_link_libraries(espeak_data_bin PRIVATE espeak_static)
-target_include_directories(espeak_data_bin PRIVATE
+target_include_directories(espeak_data_bin BEFORE PRIVATE
     ${ESPEAK_CONFIG_DIR}
     ${espeakng_SOURCE_DIR}/src/include)
+if(WIN32)
+    # The dictionary tool is a small POSIX program. MSVC needs eSpeak's
+    # getopt, plus stand-ins for fcntl.h and S_ISFIFO.
+    target_sources(espeak_data_bin PRIVATE ${espeakng_SOURCE_DIR}/src/compat/getopt.c)
+    target_include_directories(espeak_data_bin BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/Source/msvc)
+    target_compile_options(espeak_data_bin PRIVATE /FI espeak_win.h /w)
+endif()
 
 set(ESPEAK_DATA_OUT ${CMAKE_BINARY_DIR}/espeak-data-out)
 set(ESPEAK_DATA_DIR ${ESPEAK_DATA_OUT}/espeak-ng-data)
