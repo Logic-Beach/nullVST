@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(NullGlitch VERSION 1.1.0)
+project(NullGlitch VERSION 1.2.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,7 +35,7 @@ juce_add_plugin(NullGlitch
     PLUGIN_MANUFACTURER_CODE LgBc
     PLUGIN_CODE LbCk
     FORMATS VST3
-    PRODUCT_NAME "NULL GLITCH"
+    PRODUCT_NAME "NullAtomo"
     VST3_CATEGORIES Instrument Synth)
 
 juce_add_binary_data(NullGlitchData

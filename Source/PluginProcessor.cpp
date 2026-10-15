@@ -369,7 +369,7 @@ juce::String ClicksProcessor::lockSpeech (bool announce)
     else
         status = "Locked \"" + word + "\" " + juce::String (secs, 1) + "s.";
     if (announce)
-        std::fprintf (stderr, "NULL GLITCH %s speed %d pitch %d mouth %d throat %d\n",
+        std::fprintf (stderr, "NullAtomo %s speed %d pitch %d mouth %d throat %d\n",
                       status.toRawUTF8(), speed, pitch, mouth, throat);
     return status;
 }
@@ -561,7 +561,7 @@ namespace
                 { "filttype", 1 }, { "filtcut", 1800.f }, { "filtq", 2.f },
                 { "lfo1dest", 1 }, { "lfo1depth", 0.3f }, { "lfo1rate", 0.25f },
                 { "revmix", 0.5f }, { "revsize", 0.8f }, { "revdamp", 0.3f } } },
-            { "robot says", "null glitch", {
+            { "robot says", "null atomo", {
                 { "wave", 6 }, { "sublevel", 0.3f }, { "subwave", 0 },
                 { "sampitch", 64.f }, { "samspeed", 72.f },
                 { "attack", 1, true }, { "release", 10, true }, { "subattack", 1, true }, { "subrelease", 10, true },

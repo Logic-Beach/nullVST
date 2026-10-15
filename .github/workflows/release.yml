@@ -54,17 +54,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ART=$(find build -type d -name "NULL GLITCH.vst3" -print -quit)
+          ART=$(find build -type d -name "NullAtomo.vst3" -print -quit)
           test -n "$ART"
           mkdir -p dist
-          NAME="NULL-GLITCH-${GITHUB_REF_NAME}-${{ matrix.file }}.zip"
+          NAME="NullAtomo-${GITHUB_REF_NAME}-${{ matrix.file }}.zip"
           OUT="$PWD/dist/$NAME"
           PARENT=$(dirname "$ART")
           # GNU tar cannot write zip. bsdtar (macOS and Windows) can.
           if tar --version 2>/dev/null | head -1 | grep -q 'GNU tar'; then
-            (cd "$PARENT" && zip -r -y "$OUT" "NULL GLITCH.vst3")
+            (cd "$PARENT" && zip -r -y "$OUT" "NullAtomo.vst3")
           else
-            tar -a -cf "$OUT" -C "$PARENT" "NULL GLITCH.vst3"
+            tar -a -cf "$OUT" -C "$PARENT" "NullAtomo.vst3"
           fi
           ls -lh "$OUT"
 
@@ -91,7 +91,7 @@ jobs:
           set -euo pipefail
           ls -lh dist
           NOTES=$(cat <<EOF
-          NULL GLITCH ${GITHUB_REF_NAME} is a VST3 instrument.
+          NullAtomo ${GITHUB_REF_NAME} is a VST3 instrument.
 
           ## Downloads
           - macOS (11 or newer): one plugin for Apple Silicon and Intel.
@@ -99,14 +99,14 @@ jobs:
           - Linux: x86_64.
 
           ## Install
-          Unzip and move NULL GLITCH.vst3 into the host VST3 folder.
+          Unzip and move NullAtomo.vst3 into the host VST3 folder.
           - macOS: ~/Library/Audio/Plug-Ins/VST3/  (Reason also scans ~/Library/Audio/Plug-Ins/VST/)
           - Windows: C:/Program Files/Common Files/VST3/
           - Linux: ~/.vst3/
 
           The macOS build is not notarized. If macOS blocks it after download, clear the quarantine flag on the unzipped plugin:
 
-          xattr -dr com.apple.quarantine "/path/to/NULL GLITCH.vst3"
+          xattr -dr com.apple.quarantine "/path/to/NullAtomo.vst3"
 
           eSpeak NG 1.52.0 is included and is licensed under GPL-3.0. The source for this build is the ${GITHUB_REF_NAME} tag.
           EOF
@@ -115,6 +115,6 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" dist/*.zip --clobber
           else
             gh release create "$GITHUB_REF_NAME" dist/*.zip \
-              --title "NULL GLITCH ${GITHUB_REF_NAME}" \
+              --title "NullAtomo ${GITHUB_REF_NAME}" \
               --notes "$NOTES"
           fi

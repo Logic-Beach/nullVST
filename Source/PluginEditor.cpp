@@ -913,7 +913,7 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     };
     {
         juce::PropertiesFile::Options opt;
-        opt.applicationName = "NULL GLITCH";
+        opt.applicationName = "NullAtomo";
         opt.filenameSuffix = "settings";
         opt.folderName = "Logic Beach";
         opt.osxLibrarySubFolder = "Application Support";
@@ -2930,7 +2930,7 @@ void ClicksEditor::animateLfos()
 juce::File ClicksEditor::presetFolder() const
 {
     auto dir = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
-                   .getChildFile ("Library/Audio/Presets/Logic Beach/NULL GLITCH");
+                   .getChildFile ("Library/Audio/Presets/Logic Beach/NullAtomo");
     dir.createDirectory();
     return dir;
 }
@@ -2944,8 +2944,8 @@ void ClicksEditor::savePreset()
 {
     chooser = std::make_unique<juce::FileChooser> (
         "Save preset",
-        presetFolder().getChildFile ("preset.nullglitch"),
-        "*.nullglitch",
+        presetFolder().getChildFile ("preset.nullatomo"),
+        "*.nullatomo",
         true, false, this);
     chooser->launchAsync (juce::FileBrowserComponent::saveMode
                                | juce::FileBrowserComponent::canSelectFiles
@@ -2955,8 +2955,8 @@ void ClicksEditor::savePreset()
                               auto file = dialog.getResult();
                               if (file == juce::File())
                                   return;
-                              if (! file.hasFileExtension ("nullglitch"))
-                                  file = file.withFileExtension ("nullglitch");
+                              if (! file.hasFileExtension ("nullatomo"))
+                                  file = file.withFileExtension ("nullatomo");
                               presetName = file.getFileNameWithoutExtension();
                               clicks.apvts.state.setProperty ("preset", presetName, nullptr);
                               if (auto xml = clicks.apvts.copyState().createXml())
@@ -2974,7 +2974,7 @@ void ClicksEditor::loadPreset()
     chooser = std::make_unique<juce::FileChooser> (
         "Load preset",
         presetFolder(),
-        "*.nullglitch",
+        "*.nullatomo;*.nullglitch",
         true, false, this);
     chooser->launchAsync (juce::FileBrowserComponent::openMode
                                | juce::FileBrowserComponent::canSelectFiles,
@@ -2986,7 +2986,7 @@ void ClicksEditor::loadPreset()
                               const auto xml = juce::XmlDocument::parse (file);
                               if (xml == nullptr || ! xml->hasTagName (clicks.apvts.state.getType()))
                               {
-                                  showNote ("That file is not a NULL GLITCH preset.");
+                                  showNote ("That file is not a NullAtomo preset.");
                                   return;
                               }
                               clicks.replacePluginState (*xml);
