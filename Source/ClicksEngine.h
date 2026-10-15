@@ -34,6 +34,9 @@
    the beat division when sync is on, or Speed as seconds when it is free.
    Four LFOs (shape, rate, depth, dest) bend cut, reso, delay, echo, wet,
    glitch, slow, or level. Depth 0 and dest Off leave the knobs alone.
+   Retrig on an LFO restarts it at the top of its shape on a new note.
+   Retrig on delay clears the echoes. Retrig on speed counts the beat
+   division from the note, so speech and Repeat start again with the key.
    sub is a second oscillator on every wave and voice. See shapeSub().
    renderBlip / renderChit write one short loop into a buffer.
    sampleLayer plays that loop.
@@ -73,6 +76,7 @@ struct ClickParams
     float slow = 1.f;    // Speed. Playback rate. Sync forces this to 1.
     int pitchFix = 1;    // 1 keeps speech pitch. 0 is tape: pitch follows speed and the sound roughens
     int sync = 0;        // 1 restarts Sam on restartQuarters
+    int slowRetrig = 0;  // 1 counts that division from the note, and restarts Repeat
     float restartQuarters = 0.f; // beat length, in quarter notes. 0 is off.
     float scatter = 1.f; // 0 = sit on the note, 1 = full warble reach (six semitones)
     float seed = 42.f;   // which shape, with the note
@@ -83,6 +87,7 @@ struct ClickParams
     float srcGlide = 0.f;     // seconds to slide source pitch on a new key. 0 is instant
     float doublet = 0.f; // retired. The faster copy is gone.
     float delaySec = 1.f;
+    int delayRetrig = 0; // 1 clears the echoes on a new note
     float feedback = 0.3f;
     float echo = 0.0f;   // 0 dry, 1 all echo
     float level = 1.f;   // linear gain, not dB
@@ -141,6 +146,7 @@ struct ClickParams
     int lfoShape[4] = { 0, 0, 0, 0 }; // 0 sine, 1 triangle, 2 saw up, 3 saw down, 4 square, 5 sample-hold
     float lfoHz[4] = { 2.f, 0.5f, 0.25f, 0.1f };
     int lfoSync[4] = { 0, 0, 0, 0 };
+    int lfoRetrig[4] = { 0, 0, 0, 0 }; // 1 restarts that LFO on a new note
     float lfoQuarters[4] = { 1.f, 1.f, 1.f, 1.f };
     float lfoDepth[4] = { 0.f, 0.f, 0.f, 0.f };
     int lfoDest[4] = { 0, 0, 0, 0 }; // 0 off. Same list for every LFO
@@ -313,6 +319,8 @@ public:
         scopePub.store (0);
         scopeHz.store (0.f);
         scatterClock = 0;
+        scatterOrigin = 0;
+        syncOriginPpq = 0;
     }
 
     void setPitchBend (float semitones)
@@ -500,6 +508,7 @@ public:
         }
         else
             voice->fadeLeft = 0;
+        retrigFromNote (params);
         voice->beatCell = beatCellNow();
         filtStage = 0;
         filtEnv = 0.f;
@@ -2167,7 +2176,33 @@ private:
     {
         if (mix.restartQuarters <= 0.02f)
             return 0;
-        return (int) std::floor (clockPpq / (double) mix.restartQuarters);
+        const double pos = mix.slowRetrig ? clockPpq - syncOriginPpq : clockPpq;
+        return (int) std::floor (pos / (double) mix.restartQuarters);
+    }
+
+    // A new note restarts the clocks whose retrig switch is on.
+    // LFOs go back to the top of their shape. Delay drops its tail.
+    // Speed counts its division from this note, so speech and Repeat
+    // begin again with the key instead of the host clock.
+    void retrigFromNote (const ClickParams& params)
+    {
+        for (int i = 0; i < ClickParams::lfoCount; ++i)
+        {
+            if (params.lfoRetrig[i] == 0)
+                continue;
+            lfoPhase[i] = 0.f;
+            lfoRng[i] = lfoRng[i] * 1664525u + 1013904223u;
+            if (lfoRng[i] == 0)
+                lfoRng[i] = 1;
+            lfoHold[i] = ((lfoRng[i] >> 8) / 16777216.f) * 2.f - 1.f;
+        }
+        if (params.delayRetrig != 0 && ! delay.empty())
+            std::fill (delay.begin(), delay.end(), 0.f);
+        if (params.slowRetrig != 0)
+        {
+            syncOriginPpq = clockPpq;
+            scatterOrigin = scatterClock;
+        }
     }
 
     void latchLfoBases()
@@ -2220,7 +2255,8 @@ private:
             voice.scatMul = 1.f;
             return;
         }
-        const double seconds = (double) scatterClock / std::max (1.0, sampleRate);
+        const int clockAt = mix.slowRetrig ? scatterClock - scatterOrigin : scatterClock;
+        const double seconds = (double) clockAt / std::max (1.0, sampleRate);
         int step = 0;
         const int n = std::clamp ((int) std::lround (mix.steps), 1, 16);
         if (mix.warbleHz > 0.05f)
@@ -2237,7 +2273,8 @@ private:
             if (mix.sync && mix.restartQuarters > 0.02f)
             {
                 const double q = (double) mix.restartQuarters;
-                double pos = std::fmod (clockPpq, q);
+                const double at = mix.slowRetrig ? clockPpq - syncOriginPpq : clockPpq;
+                double pos = std::fmod (at, q);
                 if (pos < 0.0)
                     pos += q;
                 phase = pos / q;
@@ -2669,6 +2706,8 @@ private:
     int filtStage = 2;
     float filtEnv = 0.f;
     int scatterClock = 0;
+    int scatterOrigin = 0;     // Repeat counts from here while speed retrig is on
+    double syncOriginPpq = 0;  // the beat division counts from here while speed retrig is on
     float samPitchMul = 1.f;
     float samSpeedMul = 1.f;
     float bendSemis = 0.f;

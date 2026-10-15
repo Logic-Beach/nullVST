@@ -101,6 +101,7 @@ ClickParams ClicksProcessor::readParams() const
     params.pitchFix = tap (tap_pitchfix) > 0.5f ? 1 : 0;
     params.sync = 0;
     params.restartQuarters = 0.f;
+    params.slowRetrig = tap (tap_slowretrig) > 0.5f ? 1 : 0;
     if (tap (tap_slowsync) > 0.5f)
     {
         params.sync = 1;
@@ -117,6 +118,7 @@ ClickParams ClicksProcessor::readParams() const
     params.srcGlide = tap (tap_srcglide);
     params.doublet = 0.f;
     params.delaySec = tempoSeconds (tap_delay, tap_delaysync);
+    params.delayRetrig = tap (tap_delayretrig) > 0.5f ? 1 : 0;
     params.feedback = tap (tap_feedback);
     params.echo = tap (tap_echo);
     params.poly = (int) tap (tap_poly);
@@ -179,6 +181,7 @@ ClickParams ClicksProcessor::readParams() const
         params.lfoShape[i] = (int) tap (base + 0);
         params.lfoHz[i] = tap (base + 1);
         params.lfoSync[i] = tap (base + 2) > 0.5f ? 1 : 0;
+        params.lfoRetrig[i] = tap (tap_lfo1retrig + i) > 0.5f ? 1 : 0;
         params.lfoDepth[i] = tap (base + 3);
         params.lfoDest[i] = (int) tap (base + 4);
         if (params.lfoSync[i] != 0)
@@ -900,6 +903,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClicksProcessor::createLayou
         ParameterID { "slowsync", 1 }, "Sync", false,
         AudioParameterBoolAttributes().withAutomatable (true)));
     layout.add (std::make_unique<AudioParameterBool> (
+        ParameterID { "slowretrig", 1 }, "Speed retrig", false,
+        AudioParameterBoolAttributes().withAutomatable (true)));
+    layout.add (std::make_unique<AudioParameterBool> (
         ParameterID { "pitchfix", 1 }, "Pitch fix", false,
         AudioParameterBoolAttributes().withAutomatable (true)));
     layout.add (std::make_unique<AudioParameterFloat> (
@@ -932,6 +938,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClicksProcessor::createLayou
         NormalisableRange<float> (0.f, 1.f, 0.001f), 0.f, seconds));
     layout.add (std::make_unique<AudioParameterBool> (
         ParameterID { "delaysync", 1 }, "Delay sync", false,
+        AudioParameterBoolAttributes().withAutomatable (true)));
+    layout.add (std::make_unique<AudioParameterBool> (
+        ParameterID { "delayretrig", 1 }, "Delay retrig", false,
         AudioParameterBoolAttributes().withAutomatable (true)));
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { "feedback", 1 }, "Feedback",
@@ -1143,6 +1152,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClicksProcessor::createLayou
             lfoRate, lfoRateDefault[i - 1], hertz));
         layout.add (std::make_unique<AudioParameterBool> (
             ParameterID { "lfo" + n + "sync", 1 }, "LFO " + n + " sync", false,
+            AudioParameterBoolAttributes().withAutomatable (true)));
+        layout.add (std::make_unique<AudioParameterBool> (
+            ParameterID { "lfo" + n + "retrig", 1 }, "LFO " + n + " retrig", false,
             AudioParameterBoolAttributes().withAutomatable (true)));
         layout.add (std::make_unique<AudioParameterFloat> (
             ParameterID { "lfo" + n + "depth", 1 }, "LFO " + n + " depth",

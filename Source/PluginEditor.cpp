@@ -885,6 +885,14 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     addAndMakeVisible (syncTick);
     syncAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
         clicks.apvts, "slowsync", syncTick);
+    slowRetrig.setButtonText ("trig");
+    slowRetrig.setLookAndFeel (&look);
+    slowRetrig.setClickingTogglesState (true);
+    slowRetrig.setTooltip ("Retrig: the beat division starts on the note. Speech restarts with the key, and Repeat begins again at its first step. Off, both follow the host clock.");
+    slowRetrig.addMouseListener (this, true);
+    addAndMakeVisible (slowRetrig);
+    slowRetrigAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        clicks.apvts, "slowretrig", slowRetrig);
 
     auto addTick = [this] (juce::ToggleButton& button, const char* id, const juce::String& tip)
     {
@@ -896,6 +904,8 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
         return std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (clicks.apvts, id, button);
     };
     delaySyncAttachment = addTick (delaySync, "delaysync", "Sync: delay time steps through beat divisions. Off, the knob is seconds.");
+    delayRetrig.setButtonText ("trig");
+    delayRetrigAttachment = addTick (delayRetrig, "delayretrig", "Retrig: a new note clears the echoes, so the repeats start with that note. Off, the tail keeps ringing.");
     attackSyncAttachment = addTick (attackSync, "attacksync", "Sync: attack time steps through beat divisions. Off, the knob is seconds.");
     decaySyncAttachment = addTick (decaySync, "decaysync", "Sync: decay time steps through beat divisions. Off, the knob is seconds.");
     releaseSyncAttachment = addTick (releaseSync, "releasesync", "Sync: release time steps through beat divisions. Off, the knob is seconds.");
@@ -904,6 +914,9 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
         const juce::String id = "lfo" + juce::String (i + 1) + "sync";
         lfoSyncAttachment[i] = addTick (lfoSync[i], id.toRawUTF8(),
                                         "LFO " + juce::String (i + 1) + ": rate is hertz, sync is a beat division. One of the two is active.");
+        lfoRetrig[i].setButtonText ("trig");
+        lfoRetrigAttachment[i] = addTick (lfoRetrig[i], ("lfo" + juce::String (i + 1) + "retrig").toRawUTF8(),
+                                          "LFO " + juce::String (i + 1) + " retrig: a new note starts this LFO again at the top of its shape. Off, it keeps running. It works in hertz and in sync.");
     }
     fAttackSyncAttachment = addTick (fAttackSync, "fattacksync", "Sync: filter attack steps through beat divisions.");
     fDecaySyncAttachment = addTick (fDecaySync, "fdecaysync", "Sync: filter decay steps through beat divisions.");
@@ -979,6 +992,8 @@ ClicksEditor::~ClicksEditor()
     presetBox.setLookAndFeel (nullptr);
     lockButton.setLookAndFeel (nullptr);
     syncTick.setLookAndFeel (nullptr);
+    slowRetrig.setLookAndFeel (nullptr);
+    delayRetrig.setLookAndFeel (nullptr);
     pitchTick.setLookAndFeel (nullptr);
     delaySync.setLookAndFeel (nullptr);
     attackSync.setLookAndFeel (nullptr);
@@ -987,6 +1002,7 @@ ClicksEditor::~ClicksEditor()
     for (int i = 0; i < 4; ++i)
     {
         lfoSync[i].setLookAndFeel (nullptr);
+        lfoRetrig[i].setLookAndFeel (nullptr);
         lfoTitle[i].setLookAndFeel (nullptr);
         lfoTab[i].setLookAndFeel (nullptr);
         lfoShapeBox[i].setLookAndFeel (nullptr);
@@ -2031,9 +2047,11 @@ void ClicksEditor::resized()
             generator[2]->slider.setBounds (disc.withSizeKeepingCentre (side, disc.getHeight()));
             speedCol.removeFromTop (2);
             auto syncRow = speedCol.removeFromTop (22).reduced (6, 1);
-            syncTick.setBounds (syncRow.removeFromLeft (132));
-            syncRow.removeFromLeft (8);
-            pitchTick.setBounds (syncRow.removeFromLeft (156));
+            syncTick.setBounds (syncRow.removeFromLeft (118));
+            syncRow.removeFromLeft (4);
+            slowRetrig.setBounds (syncRow.removeFromLeft (46));
+            syncRow.removeFromLeft (6);
+            pitchTick.setBounds (syncRow.removeFromLeft (140));
         }
         placeDrop (scatLabel, scatBox, tape.removeFromTop (dropH).removeFromLeft (220));
         tape = knobRow;
@@ -2101,21 +2119,31 @@ void ClicksEditor::resized()
             layLine (mix[(size_t) i].get(), effects.removeFromTop (effectH));
     }
 
-    auto pinMode = [] (Knob& knob, juce::ToggleButton& tick)
+    auto pinMode = [] (Knob& knob, juce::ToggleButton& tick, juce::ToggleButton* retrig = nullptr)
     {
         auto cell = knob.slider.getBounds();
         auto row = cell.removeFromBottom (18);
         cell.removeFromBottom (4);
         knob.slider.setBounds (cell);
+        if (retrig != nullptr)
+        {
+            const int trigW = 46;
+            const int syncW = juce::jmin (104, juce::jmax (48, row.getWidth() - trigW - 4));
+            tick.setBounds (row.removeFromLeft (syncW).withHeight (16));
+            row.removeFromLeft (juce::jmin (4, row.getWidth()));
+            retrig->setBounds (row.removeFromLeft (juce::jmin (trigW, row.getWidth())).withHeight (16));
+            return;
+        }
         const int w = juce::jmin (104, row.getWidth());
         tick.setBounds (row.withSizeKeepingCentre (w, 16));
     };
     if (! output.empty() && output[0] != nullptr)
-        pinMode (*output[0], delaySync);
+        pinMode (*output[0], delaySync, &delayRetrig);
 
     auto layLfo = [&] (juce::Rectangle<int> col, juce::Label& shapeLabel,
                        juce::ComboBox& shape, juce::Label& destLabel, juce::ComboBox& dest,
-                       Knob* rate, Knob* depth, juce::ToggleButton& tick, bool shown)
+                       Knob* rate, Knob* depth, juce::ToggleButton& tick,
+                       juce::ToggleButton& retrig, bool shown)
     {
         auto showPart = [shown] (juce::Component& c) { c.setVisible (shown); };
         showPart (shapeLabel);
@@ -2123,6 +2151,7 @@ void ClicksEditor::resized()
         showPart (destLabel);
         showPart (dest);
         showPart (tick);
+        showPart (retrig);
         auto showKnob = [&] (Knob* knob)
         {
             if (knob == nullptr)
@@ -2146,7 +2175,7 @@ void ClicksEditor::resized()
         placeOne (rate, knobs.removeFromLeft (knobs.getWidth() * 3 / 5).reduced (2, 0));
         placeOne (depth, knobs.reduced (2, 0));
         if (rate != nullptr)
-            pinMode (*rate, tick);
+            pinMode (*rate, tick, &retrig);
         placeDrop (destLabel, dest, col.removeFromTop (dropH));
     };
     auto box = lfoPanel.reduced (6, 4);
@@ -2165,12 +2194,12 @@ void ClicksEditor::resized()
         lfoTitle[0].setBounds (lfoLeft.removeFromTop (18));
         lfoTitle[1].setBounds (box.removeFromTop (18));
         layLfo (lfoLeft, lfoShapeLabel[0], lfoShapeBox[0], lfoDestLabel[0], lfoDestBox[0],
-                lfo[0].get(), lfo[1].get(), lfoSync[0], true);
+                lfo[0].get(), lfo[1].get(), lfoSync[0], lfoRetrig[0], true);
         layLfo (box, lfoShapeLabel[1], lfoShapeBox[1], lfoDestLabel[1], lfoDestBox[1],
-                lfo[2].get(), lfo[3].get(), lfoSync[1], true);
+                lfo[2].get(), lfo[3].get(), lfoSync[1], lfoRetrig[1], true);
         for (int i = 2; i < 4; ++i)
             layLfo ({}, lfoShapeLabel[i], lfoShapeBox[i], lfoDestLabel[i], lfoDestBox[i],
-                    lfo[(size_t) (i * 2)].get(), lfo[(size_t) (i * 2 + 1)].get(), lfoSync[i], false);
+                    lfo[(size_t) (i * 2)].get(), lfo[(size_t) (i * 2 + 1)].get(), lfoSync[i], lfoRetrig[i], false);
     }
     bakeBackdrop();
 }

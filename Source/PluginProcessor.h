@@ -86,7 +86,8 @@ private:
     X(lfo1shape) X(lfo1rate) X(lfo1sync) X(lfo1depth) X(lfo1dest) \
     X(lfo2shape) X(lfo2rate) X(lfo2sync) X(lfo2depth) X(lfo2dest) \
     X(lfo3shape) X(lfo3rate) X(lfo3sync) X(lfo3depth) X(lfo3dest) \
-    X(lfo4shape) X(lfo4rate) X(lfo4sync) X(lfo4depth) X(lfo4dest)
+    X(lfo4shape) X(lfo4rate) X(lfo4sync) X(lfo4depth) X(lfo4dest) \
+    X(lfo1retrig) X(lfo2retrig) X(lfo3retrig) X(lfo4retrig) X(delayretrig) X(slowretrig)
     enum Tap
     {
 #define NG_TAP_ENUM(n) tap_##n,
