@@ -6,6 +6,12 @@ namespace
     const juce::Colour kPaper (0xfff3eee4);
     const juce::Colour kPencil (0xff241e18);
     const juce::Colour kInk (0xff3c342c);
+    const juce::Colour kLfo1 (0xffe28a2a);
+    const juce::Colour kLfo2 (0xff1f8f86);
+    const juce::Colour kLfo3 (0xffc44ad0);
+    const juce::Colour kLfo4 (0xff3a78e0);
+    const juce::Colour kLfoCol[4] = { kLfo1, kLfo2, kLfo3, kLfo4 };
+    constexpr int kDestN = 36;
 
     float noise (uint32_t s)
     {
@@ -13,6 +19,30 @@ namespace
         s ^= s >> 17;
         s ^= s << 5;
         return ((s >> 8) & 255u) / 255.f;
+    }
+
+    int knobFaceFor (const juce::String& id)
+    {
+        if (id == "slow")
+            return 8;
+        if (id == "scatter")
+            return 6;
+        if (id.startsWith ("sam") || id.startsWith ("espeak"))
+            return 7;
+        if (id == "bits" || id == "hold" || id == "glitch" || id == "crushmix"
+            || id == "limit" || id == "limitdist")
+            return 3;
+        if (id == "delay" || id == "feedback" || id == "echo")
+            return 2;
+        if (id.startsWith ("rev"))
+            return 5;
+        if (id == "width" || id == "subwidth" || id == "srcglide" || id.endsWith ("depth"))
+            return 4;
+        if (id.startsWith ("filt") || id.startsWith ("form") || id.startsWith ("reso")
+            || id == "subtune" || id == "submix" || id == "subfine"
+            || id == "compthresh" || id == "compratio" || id == "compgain")
+            return 1;
+        return 0;
     }
 
     juce::Path wobbleRect (juce::Rectangle<float> r, uint32_t salt)
@@ -72,6 +102,59 @@ ClicksEditor::Look::Look()
     setColour (juce::PopupMenu::textColourId, kPencil);
     setColour (juce::PopupMenu::highlightedBackgroundColourId, juce::Colour (0xffddd4c4));
     setColour (juce::PopupMenu::highlightedTextColourId, kPencil);
+
+    auto pict = [] (const void* data, int size)
+    {
+        return juce::ImageFileFormat::loadFrom (data, (size_t) size);
+    };
+    knob[0] = pict (BinaryData::knob1_png, BinaryData::knob1_pngSize);
+    knob[1] = pict (BinaryData::knob2_png, BinaryData::knob2_pngSize);
+    knob[2] = pict (BinaryData::knob3_png, BinaryData::knob3_pngSize);
+    knob[3] = pict (BinaryData::knob4_png, BinaryData::knob4_pngSize);
+    knob[4] = pict (BinaryData::knob5_png, BinaryData::knob5_pngSize);
+    knob[5] = pict (BinaryData::knob6_png, BinaryData::knob6_pngSize);
+    knob[6] = pict (BinaryData::knobbig_png, BinaryData::knobbig_pngSize);
+    knob[7] = pict (BinaryData::knobface_png, BinaryData::knobface_pngSize);
+    knob[8] = pict (BinaryData::knobtape_png, BinaryData::knobtape_pngSize);
+    faderTrack = pict (BinaryData::faderbar_png, BinaryData::faderbar_pngSize);
+    faderCap = pict (BinaryData::faderknob_png, BinaryData::faderknob_pngSize);
+    barFill = pict (BinaryData::bar_png, BinaryData::bar_pngSize);
+    switchArt = pict (BinaryData::switch_png, BinaryData::switch_pngSize);
+    wave[0] = pict (BinaryData::wavesine_png, BinaryData::wavesine_pngSize);
+    wave[1] = pict (BinaryData::wavesaw_png, BinaryData::wavesaw_pngSize);
+    wave[2] = pict (BinaryData::wavesquare_png, BinaryData::wavesquare_pngSize);
+    wave[3] = pict (BinaryData::wavetriangle_png, BinaryData::wavetriangle_pngSize);
+    wave[4] = pict (BinaryData::wavenoise_png, BinaryData::wavenoise_pngSize);
+    tapeDeck = pict (BinaryData::tape_png, BinaryData::tape_pngSize);
+    panelMain = pict (BinaryData::backgroundmain_png, BinaryData::backgroundmain_pngSize);
+    panelOut = pict (BinaryData::backgroundoutput_png, BinaryData::backgroundoutput_pngSize);
+
+    // The scans keep a clear margin. Composite that onto the paper and force every pixel solid.
+    auto flatten = [] (juce::Image& image)
+    {
+        if (! image.isValid())
+            return;
+        const float pr = kPaper.getFloatRed();
+        const float pg = kPaper.getFloatGreen();
+        const float pb = kPaper.getFloatBlue();
+        juce::Image::BitmapData pix (image, juce::Image::BitmapData::readWrite);
+        for (int y = 0; y < image.getHeight(); ++y)
+        {
+            for (int x = 0; x < image.getWidth(); ++x)
+            {
+                const auto c = pix.getPixelColour (x, y);
+                const float a = c.getFloatAlpha();
+                if (a >= 0.999f)
+                    continue;
+                const float r = c.getFloatRed() * a + pr * (1.f - a);
+                const float g = c.getFloatGreen() * a + pg * (1.f - a);
+                const float b = c.getFloatBlue() * a + pb * (1.f - a);
+                pix.setPixelColour (x, y, juce::Colour::fromFloatRGBA (r, g, b, 1.f));
+            }
+        }
+    };
+    flatten (panelMain);
+    flatten (panelOut);
 }
 
 juce::Font ClicksEditor::Look::faceFont (float height) const
@@ -81,10 +164,62 @@ juce::Font ClicksEditor::Look::faceFont (float height) const
     return juce::Font (juce::FontOptions (height));
 }
 
-juce::Font ClicksEditor::Look::getComboBoxFont (juce::ComboBox&) { return faceFont (16.f); }
-juce::Font ClicksEditor::Look::getLabelFont (juce::Label&)       { return faceFont (15.f); }
-juce::Font ClicksEditor::Look::getPopupMenuFont()                { return faceFont (16.f); }
+juce::Font ClicksEditor::Look::getLabelFont (juce::Label& label)
+{
+    const float h = label.getFont().getHeight();
+    return faceFont (h > 1.f ? h : 15.f);
+}
+juce::Font ClicksEditor::Look::getPopupMenuFont()                { return faceFont (20.f); }
+
+void ClicksEditor::Look::getIdealPopupMenuItemSize (const juce::String& text, bool isSeparator,
+                                                   int standardMenuItemHeight,
+                                                   int& idealWidth, int& idealHeight)
+{
+    LookAndFeel_V4::getIdealPopupMenuItemSize (text, isSeparator, standardMenuItemHeight, idealWidth, idealHeight);
+    if (! isSeparator)
+        idealHeight = juce::jmax (idealHeight, 30);
+}
 juce::Font ClicksEditor::Look::getSliderPopupFont (juce::Slider&) { return faceFont (13.f); }
+juce::Font ClicksEditor::Look::getTextButtonFont (juce::TextButton&, int buttonHeight)
+{
+    return faceFont (buttonHeight > 4 ? (float) buttonHeight * 0.55f : 14.f);
+}
+
+juce::Font ClicksEditor::Look::getComboBoxFont (juce::ComboBox&)
+{
+    return faceFont (16.f);
+}
+
+void ClicksEditor::Look::drawComboBox (juce::Graphics& g, int width, int height, bool,
+                                      int buttonX, int buttonY, int buttonW, int buttonH, juce::ComboBox&)
+{
+    auto plate = juce::Rectangle<float> (0.f, 0.f, (float) width, (float) height);
+    if (barFill.isValid())
+    {
+        g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+        g.drawImage (barFill, plate, juce::RectanglePlacement::stretchToFit);
+    }
+    else
+    {
+        g.setColour (kPaper);
+        g.fillRoundedRectangle (plate.reduced (0.5f), 3.f);
+        g.setColour (kPencil);
+        g.drawRoundedRectangle (plate.reduced (0.9f), 3.f, 1.2f);
+    }
+    juce::Path arrow;
+    const float cx = (float) buttonX + (float) buttonW * 0.5f;
+    const float cy = (float) buttonY + (float) buttonH * 0.5f;
+    arrow.addTriangle (cx - 4.f, cy - 2.f, cx + 4.f, cy - 2.f, cx, cy + 3.f);
+    g.setColour (kPencil);
+    g.fillPath (arrow);
+}
+
+void ClicksEditor::Look::positionComboBoxText (juce::ComboBox& box, juce::Label& label)
+{
+    label.setBounds (6, 1, box.getWidth() - 22, box.getHeight() - 2);
+    label.setFont (getComboBoxFont (box));
+    label.setJustificationType (juce::Justification::centredLeft);
+}
 
 void ClicksEditor::Look::drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height,
                                            float sliderPos, float startAngle, float endAngle,
@@ -117,6 +252,34 @@ void ClicksEditor::Look::drawRotarySlider (juce::Graphics& g, int x, int y, int 
     g.setColour (kPencil);
     g.strokePath (disc, juce::PathStrokeType (1.7f));
 
+    const int lfoMark = (int) slider.getProperties().getWithDefault ("lfo", 0);
+    for (int i = 0; i < 4; ++i)
+    {
+        if ((lfoMark & (1 << i)) == 0)
+            continue;
+        const float pad = 3.5f + (float) i * 3.2f;
+        g.setColour (kLfoCol[i]);
+        g.drawEllipse (centre.x - radius - pad, centre.y - radius - pad,
+                       (radius + pad) * 2.f, (radius + pad) * 2.f, 2.2f);
+    }
+
+    const float lfoDrive = (float) slider.getProperties().getWithDefault ("lfoDrive", 0.0);
+    sliderPos = juce::jlimit (0.f, 1.f, sliderPos + lfoDrive * 0.5f);
+
+    const int art = (int) slider.getProperties().getWithDefault ("face", 0);
+    if (art >= 0 && art < 9 && knob[art].isValid())
+    {
+        const float rot = (sliderPos - 0.5f) * (endAngle - startAngle);
+        auto plate = juce::Rectangle<float> ((float) x, (float) y, (float) width, (float) height)
+                         .withSizeKeepingCentre (side, side);
+        g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+        g.saveState();
+        g.addTransform (juce::AffineTransform::rotation (rot, plate.getCentreX(), plate.getCentreY()));
+        g.drawImage (knob[art], plate, juce::RectanglePlacement::stretchToFit);
+        g.restoreState();
+        return;
+    }
+
     const int ticks = 11;
     for (int i = 0; i < ticks; ++i)
     {
@@ -125,14 +288,15 @@ void ClicksEditor::Look::drawRotarySlider (juce::Graphics& g, int x, int y, int 
         const float inner = radius + 3.f;
         const float outer = radius + (t <= sliderPos + 0.02f ? 8.5f : 5.5f);
         const float wob = (noise (salt + (uint32_t) i * 11u) - 0.5f) * 1.4f;
-        juce::Line<float> mark (centre.x + std::cos (ang) * inner,
+        juce::Line<float> tick (centre.x + std::cos (ang) * inner,
                                 centre.y + std::sin (ang) * inner,
                                 centre.x + std::cos (ang) * (outer + wob),
                                 centre.y + std::sin (ang) * (outer + wob));
         g.setColour (t <= sliderPos + 0.001f ? kPencil : kPencil.withAlpha (0.35f));
-        g.drawLine (mark, t <= sliderPos + 0.001f ? 1.6f : 1.0f);
+        g.drawLine (tick, t <= sliderPos + 0.001f ? 1.6f : 1.0f);
     }
 
+    // Knob art rotates with this angle.
     const float ang = startAngle + sliderPos * (endAngle - startAngle);
     const float len = radius * 0.62f;
     juce::Path needle;
@@ -147,47 +311,189 @@ void ClicksEditor::Look::drawRotarySlider (juce::Graphics& g, int x, int y, int 
     g.fillEllipse (centre.x - 2.4f, centre.y - 2.4f, 4.8f, 4.8f);
 }
 
-void ClicksEditor::Look::drawComboBox (juce::Graphics& g, int width, int height, bool,
-                                       int, int, int, int, juce::ComboBox& box)
+void ClicksEditor::Look::drawLinearSlider (juce::Graphics& g, int x, int y, int width, int height,
+                                           float sliderPos, float, float,
+                                           juce::Slider::SliderStyle style, juce::Slider& slider)
 {
-    auto area = juce::Rectangle<float> (1.f, 1.f, (float) width - 2.f, (float) height - 2.f);
-    const auto card = wobbleRect (area, (uint32_t) box.getName().hashCode() + 9u);
+    const bool vertical = style == juce::Slider::LinearVertical
+                       || style == juce::Slider::LinearBarVertical;
+    auto area = juce::Rectangle<float> ((float) x, (float) y, (float) width, (float) height).reduced (2.f);
+
+    const float lfoDrive = (float) slider.getProperties().getWithDefault ("lfoDrive", 0.0);
+    if (std::abs (lfoDrive) > 1.0e-4f)
+    {
+        const float prop = (float) slider.valueToProportionOfLength (slider.getValue());
+        const float shown = juce::jlimit (0.f, 1.f, prop + lfoDrive * 0.5f);
+        const float travel = vertical ? area.getHeight() : area.getWidth();
+        const float delta = (shown - prop) * travel;
+        sliderPos += vertical ? -delta : delta;
+    }
+
+    const int lfoMark = (int) slider.getProperties().getWithDefault ("lfo", 0);
+    juce::Colour capCol = kPencil;
+    for (int i = 0; i < 4; ++i)
+        if ((lfoMark & (1 << i)) != 0)
+            capCol = kLfoCol[i];
+
+    if (faderTrack.isValid() && faderCap.isValid())
+    {
+        auto track = vertical
+            ? area.reduced (area.getWidth() * 0.22f, 0.f)
+            : area.reduced (0.f, area.getHeight() * 0.28f);
+        g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+        g.drawImage (faderTrack, track, juce::RectanglePlacement::stretchToFit);
+        const float cap = vertical ? area.getWidth()
+                                   : juce::jmin (area.getHeight() * 1.2f, 34.f);
+        auto head = vertical
+            ? juce::Rectangle<float> (area.getX(), sliderPos - cap * 0.5f, area.getWidth(), cap)
+            : juce::Rectangle<float> (sliderPos - cap * 0.5f, area.getY(), cap, area.getHeight());
+        g.drawImage (faderCap, head, juce::RectanglePlacement::stretchToFit);
+        if (lfoMark != 0)
+        {
+            g.setColour (capCol);
+            g.drawRect (head, 1.6f);
+        }
+        return;
+    }
+
+    const float trackW = 5.f;
+    juce::Rectangle<float> track = vertical
+        ? area.withSizeKeepingCentre (trackW, area.getHeight())
+        : area.withSizeKeepingCentre (area.getWidth(), trackW);
     g.setColour (kPaper);
-    g.fillPath (card);
+    g.fillRoundedRectangle (track, 2.f);
     g.setColour (kPencil);
-    g.strokePath (card, juce::PathStrokeType (1.6f));
+    g.drawRoundedRectangle (track.reduced (0.4f), 2.f, 1.2f);
 
-    const float cx = (float) width - 16.f;
-    const float cy = (float) height * 0.5f;
-    juce::Path chevron;
-    chevron.startNewSubPath (cx - 5.f, cy - 2.f);
-    chevron.lineTo (cx, cy + 3.f);
-    chevron.lineTo (cx + 5.f, cy - 2.f);
-    g.strokePath (chevron, juce::PathStrokeType (1.5f));
+    const float thumb = vertical ? 14.f : 16.f;
+    juce::Rectangle<float> head = vertical
+        ? juce::Rectangle<float> (area.getCentreX() - 9.f, sliderPos - thumb * 0.5f, 18.f, thumb)
+        : juce::Rectangle<float> (sliderPos - thumb * 0.5f, area.getCentreY() - 7.f, thumb, 14.f);
+    g.setColour (capCol);
+    g.fillRoundedRectangle (head, 2.f);
 }
 
-void ClicksEditor::Look::positionComboBoxText (juce::ComboBox& box, juce::Label& label)
+void ClicksEditor::Look::drawToggleButton (juce::Graphics& g, juce::ToggleButton& button,
+                                          bool, bool)
 {
-    label.setBounds (8, 0, box.getWidth() - 28, box.getHeight());
-    label.setFont (faceFont (16.f));
-    label.setJustificationType (juce::Justification::centredLeft);
+    if ((int) button.getProperties().getWithDefault ("pair", 0) != 0)
+    {
+        auto area = button.getLocalBounds().toFloat().reduced (0.5f);
+        auto left = area.withWidth (area.getWidth() * 0.5f);
+        auto right = area.withTrimmedLeft (left.getWidth());
+        const bool sync = button.getToggleState();
+        if (switchArt.isValid())
+        {
+            g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+            g.saveState();
+            if (! sync)
+                g.addTransform (juce::AffineTransform::scale (-1.f, 1.f, area.getCentreX(), area.getCentreY()));
+            g.drawImage (switchArt, area, juce::RectanglePlacement::stretchToFit);
+            g.restoreState();
+        }
+        else
+        {
+            auto halfFill = [&] (juce::Rectangle<float> r, bool on)
+            {
+                g.setColour (on ? kPencil : kPaper);
+                g.fillRect (r);
+                g.setColour (kPencil);
+                g.drawRect (r, 1.15f);
+            };
+            halfFill (left, ! sync);
+            halfFill (right, sync);
+        }
+        const juce::String leftName = button.getProperties().getWithDefault ("pairL", "rate").toString();
+        const juce::String rightName = button.getProperties().getWithDefault ("pairR", "sync").toString();
+        g.setFont (faceFont (11.f));
+        g.setColour (kPencil);
+        g.drawText (leftName, left, juce::Justification::centred, false);
+        g.drawText (rightName, right, juce::Justification::centred, false);
+        return;
+    }
+
+    if (switchArt.isValid())
+    {
+        auto area = button.getLocalBounds().toFloat().reduced (0.5f);
+        g.saveState();
+        if (button.getToggleState())
+            g.addTransform (juce::AffineTransform::scale (-1.f, 1.f, area.getCentreX(), area.getCentreY()));
+        g.drawImage (switchArt, area, juce::RectanglePlacement::stretchToFit);
+        g.restoreState();
+        if (button.getButtonText().isNotEmpty())
+        {
+            g.setColour (kPencil);
+            g.setFont (faceFont (12.f));
+            g.drawText (button.getButtonText(), area.reduced (4.f, 0.f),
+                        juce::Justification::centred, false);
+        }
+        return;
+    }
+
+    // Switch art flips across its centre. On is the mirror of off.
+    auto area = button.getLocalBounds().toFloat().reduced (0.5f);
+    auto track = area.removeFromLeft (juce::jmin (area.getWidth(), area.getHeight() * 1.8f));
+    const float radius = track.getHeight() * 0.5f;
+    g.setColour (kPaper);
+    g.fillRoundedRectangle (track, radius);
+    g.setColour (kPencil);
+    g.drawRoundedRectangle (track.reduced (0.6f), radius, 1.3f);
+
+    const float thumb = track.getHeight() - 5.f;
+    const float x = button.getToggleState()
+                        ? track.getRight() - thumb - 2.5f
+                        : track.getX() + 2.5f;
+    g.fillRoundedRectangle (x, track.getY() + 2.5f, thumb, thumb, 2.f);
+
+    if (button.getButtonText().isNotEmpty())
+    {
+        g.setFont (faceFont (12.f));
+        g.drawText (button.getButtonText(), area.reduced (4.f, 0.f),
+                    juce::Justification::centredLeft, false);
+    }
 }
 
-void ClicksEditor::Look::drawPopupMenuBackground (juce::Graphics& g, int width, int height)
+juce::Rectangle<int> ClicksEditor::Look::getTooltipBounds (const juce::String& tip, juce::Point<int> pos,
+                                                          juce::Rectangle<int> parent)
 {
-    g.fillAll (kPaper);
+    const int textW = 260;
+    juce::AttributedString words;
+    words.setText (tip);
+    words.setFont (faceFont (13.f));
+    words.setColour (kPencil);
+    juce::TextLayout laid;
+    laid.createLayout (words, (float) textW);
+    const int w = textW + 14;
+    const int h = (int) std::ceil (laid.getHeight()) + 10;
+    auto box = juce::Rectangle<int> (pos.x + 12, pos.y + 16, w, h);
+    if (box.getRight() > parent.getRight())
+        box.setX (parent.getRight() - w);
+    if (box.getBottom() > parent.getBottom())
+        box.setY (pos.y - h - 6);
+    return box.constrainedWithin (parent);
+}
+
+void ClicksEditor::Look::drawTooltip (juce::Graphics& g, const juce::String& text, int width, int height)
+{
+    g.setColour (kPaper);
+    g.fillRoundedRectangle (0.f, 0.f, (float) width, (float) height, 3.f);
     g.setColour (kPencil);
-    g.drawRect (0, 0, width, height, 2);
+    g.drawRoundedRectangle (0.5f, 0.5f, (float) width - 1.f, (float) height - 1.f, 3.f, 1.2f);
+    g.setFont (faceFont (13.f));
+    g.drawFittedText (text, 7, 4, width - 14, height - 8, juce::Justification::centredLeft, 8, 0.85f);
 }
 
 ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     : AudioProcessorEditor (&synth),
       clicks (synth),
+      tips (this, 680),
       keyboard (synth.keyboard, juce::MidiKeyboardComponent::horizontalKeyboard)
 {
     look.face = juce::Typeface::createSystemTypefaceFor (BinaryData::Chicago12_otf,
                                                           BinaryData::Chicago12_otfSize);
     field = juce::ImageFileFormat::loadFrom (BinaryData::starfield_png, BinaryData::starfield_pngSize);
+    mark = juce::ImageFileFormat::loadFrom (BinaryData::nullatomo_png, BinaryData::nullatomo_pngSize);
+    bot = juce::ImageFileFormat::loadFrom (BinaryData::samrobot_jpg, BinaryData::samrobot_jpgSize);
 
     grain = juce::Image (juce::Image::ARGB, 180, 180, true);
     {
@@ -204,47 +510,295 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     }
 
     setLookAndFeel (&look);
+    tips.setLookAndFeel (&look);
 
-    auto styleChoice = [this] (juce::ComboBox& box, juce::Label& caption, const juce::String& id, const juce::String& name)
+    auto addDrop = [this] (juce::ComboBox& box, juce::Label& caption, const juce::String& id,
+                           const juce::String& name, const juce::String& tip)
+        -> std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>
     {
         if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (clicks.apvts.getParameter (id)))
-            box.addItemList (choice->choices, 1);
-        box.setJustificationType (juce::Justification::centredLeft);
+            for (int i = 0; i < choice->choices.size(); ++i)
+                box.addItem (choice->choices[i], i + 1);
         box.setLookAndFeel (&look);
+        box.setTooltip (tip);
+        box.setColour (juce::ComboBox::backgroundColourId, kPaper);
         box.setColour (juce::ComboBox::textColourId, kPencil);
+        box.setColour (juce::ComboBox::outlineColourId, kPencil);
+        box.setColour (juce::ComboBox::arrowColourId, kPencil);
+        box.getProperties().set ("paramId", id);
+        box.addMouseListener (this, true);
         addAndMakeVisible (box);
         caption.setText (name, juce::dontSendNotification);
-        caption.setFont (chicagoFont (14.f));
+        caption.setFont (chicagoFont (15.f));
         caption.setColour (juce::Label::textColourId, kPencil);
         caption.setJustificationType (juce::Justification::centredLeft);
         caption.setLookAndFeel (&look);
+        caption.setTooltip (tip);
+        caption.addMouseListener (this, true);
         addAndMakeVisible (caption);
+        return std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (clicks.apvts, id, box);
     };
-    styleChoice (voiceBox, voiceLabel, "voice", "voice");
-    styleChoice (polyBox, polyLabel, "poly", "voices");
-    voiceAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
-        clicks.apvts, "voice", voiceBox);
-    polyAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
-        clicks.apvts, "poly", polyBox);
+    waveAttachment = addDrop (waveBox, waveLabel, "wave", "wave",
+                              "Wave: Sine, saw up, saw down, square, and triangle follow Width. Noise is a hiss. Sam is the locked 1982 speech chip. eSpeak is a second speech voice with its own knobs. Either one lights the robot mouth.");
+    polyAttachment = addDrop (polyBox, polyLabel, "poly", "voices",
+                              "Voices: Mono keeps the newest key. Poly lets notes overlap.");
+    scatAttachment = addDrop (scatBox, scatLabel, "scatmode", "drift",
+                              "Drift: Warble is tape-style pitch drift on every source, including Sam and eSpeak. Low scatter wobbles a little. Full scatter can jump whole semitones. Repeat plays a fixed run of steps. The rate knob sets how fast either one moves, apart from tape speed.");
+    subAttachment = addDrop (subBox, subLabel, "submode", "mode",
+                             "Sub: Add and subtract mix it in. Multiply is ring modulation. Divide is the tone over the sub. AM is loudness. FM bends the pitch. Min and max pick the lower or higher sample.");
+    subWaveAttachment = addDrop (subWaveBox, subWaveLabel, "subwave", "shape",
+                                 "Shape: sine, square, saw up, saw down, or triangle. The sub has its own width.");
+    filtTypeAttachment = addDrop (filtTypeBox, filtTypeLabel, "filttype", "type",
+                                  "Type: Off leaves the path dry. Lowpass, highpass, bandpass, notch, formant, and resonator.");
+    filtWhereAttachment = addDrop (filtWhereBox, filtWhereLabel, "filtwhere", "place",
+                                   "Place: on the first effect order, Tone filters the note so the echo shares it. Out filters the mix, and the repeats pass through it again.");
+    fxOrderAttachment = addDrop (fxOrderBox, fxOrderLabel, "fxorder", "order",
+                                 "Order: crush, filter, delay, tape colour, and the compressor. The first row is the original path, and Place still moves the filter there. The other rows put those effects in the order they are named.");
+    fxOrderBox.setVisible (false);
+    fxOrderLabel.setVisible (false);
+    const char* slotIds[6] = { "tapeslot", "crushslot", "filtslot", "delayslot", "revslot", "compslot" };
+    const char* slotTips[6] = {
+        "Tape place in the chain. 1 runs first. Picking a number another effect already has swaps the two.",
+        "Crush place in the chain. 1 runs first. Picking a number another effect already has swaps the two.",
+        "Filter place in the chain. 1 runs first. Picking a number another effect already has swaps the two.",
+        "Delay place in the chain. 1 runs first. Picking a number another effect already has swaps the two.",
+        "Reverb place in the chain. 1 runs first. Picking a number another effect already has swaps the two.",
+        "Compress place in the chain. 1 runs first. The limiter stays last. Picking a number another effect already has swaps the two."
+    };
+    for (int i = 0; i < 6; ++i)
+    {
+        auto& box = slotBox[i];
+        for (int n = 1; n <= 6; ++n)
+            box.addItem (juce::String (n), n);
+        box.setLookAndFeel (&look);
+        box.setColour (juce::ComboBox::backgroundColourId, kPaper);
+        box.setColour (juce::ComboBox::textColourId, kPencil);
+        box.setColour (juce::ComboBox::outlineColourId, kPencil);
+        box.setColour (juce::ComboBox::arrowColourId, kPencil);
+        box.setTooltip (slotTips[i]);
+        box.getProperties().set ("paramId", slotIds[i]);
+        box.addMouseListener (this, true);
+        addAndMakeVisible (box);
+        slotAttachment[i] = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
+            clicks.apvts, slotIds[i], box);
+    }
+    for (int i = 0; i < 6; ++i)
+        slotBox[i].onChange = [this, i] { routeSlot (i); };
+    for (int i = 0; i < 4; ++i)
+    {
+        const auto n = juce::String (i + 1);
+        lfoShapeAttachment[i] = addDrop (lfoShapeBox[i], lfoShapeLabel[i], "lfo" + n + "shape", "shape",
+                                         "LFO " + n + " shape: sine, triangle, saw up, saw down, square, or sample-hold.");
+        lfoDestAttachment[i] = addDrop (lfoDestBox[i], lfoDestLabel[i], "lfo" + n + "dest", "dest",
+                                        "LFO " + n + " destination. The chosen control wears this colour.");
+    }
 
-    for (auto spec : { std::pair<const char*, const char*> { "seed", "seed" },
-                       { "bits", "bits" },
-                       { "hold", "hold" },
-                       { "glitch", "glitch" },
-                       { "slow", "slow" },
-                       { "scatter", "scatter" },
-                       { "double", "double" } })
-        generator.push_back (addKnob (spec.first, spec.second));
+    // name, caption under the knob, and the line shown in the title bar while the pointer is on it.
+    // Crush is bits + hold. Glitch is the holes, and it also lengthens hold.
+    struct Spec { const char* id; const char* name; const char* hint; const char* tip; };
+    // Rows follow the sound: sub and playback, then the crusher, then the click.
+    for (auto spec : { Spec { "subtune", "tune", "sub semis",
+                              "Tune: sub pitch in semitones from the key. -12 is one octave down. It follows every note." },
+                       Spec { "submix", "mix", "sub amount",
+                              "Mix: how hard the sub joins. Zero leaves every mode dry." },
+                       Spec { "slow", "speed", "rate",
+                              "Speed: the tape rate for the whole instrument. Tape drops the pitch as it slows and roughens the sound, without getting louder. Fix keeps the pitch and only changes the time. One plays the note as held. Tempo on, this is the beat division. Speech fills that division. Drift speed is the rate knob beside amount." },
+                       Spec { "bits", "bits", "crush steps",
+                              "Bits: volume steps. 16 is clean. 8 hisses. 2 is a few coarse levels. Set wave to Sine, glitch to 0, and hold to 1." },
+                       Spec { "hold", "hold", "crush freeze",
+                              "Hold: how many samples a crushed step stays frozen. Longer makes wider stairs on the scope. Set glitch to 0 first." },
+                       Spec { "glitch", "glitch", "holes",
+                              "Glitch: random holes and a stuck sample. It also lengthens hold, which covers bits and hold." },
+                       Spec { "crushmix", "wet", "crush mix",
+                              "Wet: how much bits, hold, and glitch replace the clean note. Zero leaves the note dry." },
+                       Spec { "seed", "seed", "which pattern",
+                              "Seed: which scatter pattern, on every wave. The same key and seed repeat. Warble keeps drifting. Repeat plays one fixed run of that seed." },
+                       Spec { "scatter", "amount", "warble",
+                              "Amount: how far the tape warble moves on every source, including Sam and eSpeak. Low is a subtle wobble. Full can jump whole semitones. Repeat mode still uses this as its pitch spread." },
+                       Spec { "steps", "steps", "in the loop",
+                              "Steps: how many pitches Repeat plays, then loops. The rate knob sets how long that run takes. Tape speed does not." },
+                       Spec { "width", "width", "pulse",
+                              "Width: where the main wave flips. Half is the plain shape. Square becomes a pulse. Sine, saw up, saw down, and triangle lean the same way. Noise and speech stay plain. The sub has its own width." },
+                       Spec { "subfine", "fine", "cents",
+                              "Fine: cents on top of the sub tune. Zero leaves the semitone where tune set it." },
+                       Spec { "subwidth", "width", "pulse",
+                              "Width: where the sub wave flips. Half is the plain shape." },
+                       Spec { "scatglide", "glide", "warble slide",
+                              "Glide: how long the warble takes to slide from one pitch to the next. Zero snaps instantly. It sits with the tape drift." },
+                       Spec { "srcglide", "slide", "source glide",
+                              "Slide: how long the main source glides between keys. Zero jumps on the new note. The sub ignores this." } })
+        generator.push_back (addKnob (spec.id, spec.name, spec.hint, spec.tip));
+    wobble.push_back (addKnob ("wobrate", "rate", "warble",
+                               "Warble rate: how fast Warble picks a new pitch, and how fast Repeat walks its steps. Tape speed does not move this. Higher is a faster flutter."));
 
-    for (auto spec : { std::pair<const char*, const char*> { "attack", "attack" },
-                       { "decay", "decay" },
-                       { "sustain", "sustain" },
-                       { "release", "release" },
-                       { "delay", "delay" },
-                       { "feedback", "feedback" },
-                       { "echo", "echo" },
-                       { "level", "level" } })
-        output.push_back (addKnob (spec.first, spec.second));
+    for (auto spec : {                        Spec { "samspeed", "speed", "sam talk",
+                              "Speed: how fast Sam talks. It stays the same on every key, and a held note follows the knob. 72 is the 1982 voice. Higher is slower." },
+                       Spec { "sampitch", "pitch", "sam pitch",
+                              "Pitch: Sam's own pitch. 64 is the original. A held note follows this knob. Keys change the pitch and leave the talk speed alone." },
+                       Spec { "sammouth", "mouth", "sam mouth",
+                              "Mouth: Sam's mouth shape. 128 is the original. A held note follows the knob." },
+                       Spec { "samthroat", "throat", "sam throat",
+                              "Throat: Sam's throat shape. 128 is the original. A held note follows the knob." },
+                       Spec { "samslow", "slow", "near stop",
+                              "Slow: stretches the locked word on the fly, down to a near stop. One keeps the pace Speed and the Sam speed knob already set. A held note follows the knob. It does not re-render Sam." } })
+        sam.push_back (addKnob (spec.id, spec.name, spec.hint, spec.tip));
+
+    for (auto spec : { Spec { "espeakrate", "rate", "words a minute",
+                              "Rate: how fast eSpeak talks, in words a minute. 175 is the usual pace. Higher is faster. A held note follows the knob." },
+                       Spec { "espeakpitch", "pitch", "espeak pitch",
+                              "Pitch: eSpeak's own pitch, 0 to 99. 50 is the usual voice. Keys change the pitch and leave the talk speed alone." },
+                       Spec { "espeakrange", "range", "intonation",
+                              "Range: how far the pitch moves inside the sentence. 50 is the usual rise and fall. Zero is flatter." },
+                       Spec { "espeakgap", "gap", "word pause",
+                              "Gap: extra pause between words. Each step is about a hundredth of a second. Zero keeps the words close." },
+                       Spec { "espeakvoice", "voice", "variant",
+                              "Voice: en, male and female variants, whisper, croak, and Klatt. The row swaps to these knobs while eSpeak is selected." } })
+        speak.push_back (addKnob (spec.id, spec.name, spec.hint, spec.tip));
+    if (speak.size() > 4 && speak[4] != nullptr)
+    {
+        static const char* voiceNames[] = {
+            "en", "m1", "m3", "m5", "f1", "f3", "f5", "whisper", "croak", "klatt", "klatt2", "klatt3"
+        };
+        speak[4]->slider.textFromValueFunction = [] (double value)
+        {
+            const int i = juce::jlimit (0, 11, (int) std::lround (value));
+            return juce::String (voiceNames[i]);
+        };
+        speak[4]->slider.valueFromTextFunction = [] (const juce::String& text)
+        {
+            for (int i = 0; i < 12; ++i)
+                if (text.equalsIgnoreCase (voiceNames[i]))
+                    return (double) i;
+            return text.getDoubleValue();
+        };
+        speak[4]->slider.updateText();
+    }
+
+    for (auto spec : { Spec { "attack", "A", "",
+                              "Attack: fade-in time after the key goes down. Sync steps this through beat divisions." },
+                       Spec { "decay", "D", "",
+                              "Decay: time to fall from full level down to sustain. Sync steps this through beat divisions." },
+                       Spec { "sustain", "S", "",
+                              "Sustain: level while the key stays down." },
+                       Spec { "release", "R", "",
+                              "Release: fade time after the key comes up. Sync steps this through beat divisions." } })
+        env.push_back (addFader (spec.id, spec.name, spec.hint, spec.tip));
+
+    for (auto spec : { Spec { "subattack", "A", "",
+                              "Sub attack: fade-in of the sub after the key goes down. Sync steps this through beat divisions." },
+                       Spec { "subdecay", "D", "",
+                              "Sub decay: time for the sub to fall from full level down to sustain. Sync steps this through beat divisions." },
+                       Spec { "subsustain", "S", "",
+                              "Sub sustain: sub level while the key stays down." },
+                       Spec { "subrelease", "R", "",
+                              "Sub release: fade of the sub after the key comes up. Sync steps this through beat divisions." } })
+        senv.push_back (addFader (spec.id, spec.name, spec.hint, spec.tip));
+
+    for (auto spec : { Spec { "fattack", "A", "",
+                              "Filter attack: how fast the filter envelope opens. Sync steps this through beat divisions." },
+                       Spec { "fdecay", "D", "",
+                              "Filter decay: fall from the top of the filter envelope down to its sustain. Sync steps this through beat divisions." },
+                       Spec { "fsustain", "S", "",
+                              "Filter sustain: envelope level while the key is down." },
+                       Spec { "frelease", "R", "",
+                              "Filter release: how the filter envelope closes after the key comes up. Sync steps this through beat divisions." },
+                       Spec { "fenv", "amt", "",
+                              "Filter envelope amount. Positive opens the cutoff as the envelope rises. Negative closes it. Zero leaves the cutoff still." } })
+        fenv.push_back (addFader (spec.id, spec.name, spec.hint, spec.tip));
+
+    for (auto spec : { Spec { "delay", "delay", "echo time",
+                              "Delay: time before the echo returns. Sync steps this through beat divisions, triplets and dotted notes included, from a 32nd-note triplet up to 8 bars." },
+                       Spec { "feedback", "feedback", "repeats",
+                              "Feedback: how much echo is fed back. Higher rings longer." },
+                       Spec { "echo", "echo", "dry / wet",
+                              "Echo: balance from the dry note to the echo." },
+                       Spec { "level", "level", "loudness",
+                              "Level: output loudness, in decibels." } })
+        output.push_back (addKnob (spec.id, spec.name, spec.hint, spec.tip));
+
+    // Cut and reso sit in the filters card. They grey out while type is Off.
+    for (auto spec : { Spec { "filtcut", "cut", "hertz",
+                              "Cut: filter frequency. On a formant this walks the vowel. On a resonator this is the ring." },
+                       Spec { "filtq", "reso", "sharpness",
+                              "Reso: how hard the filter rings at the cutoff. On a formant this is the vowel bandwidth." },
+                       Spec { "formshift", "shift", "vowel size",
+                              "Shift: scales every formant. Lower is a bigger mouth. Higher is smaller." },
+                       Spec { "formspread", "spread", "vowel gap",
+                              "Spread: pulls the upper formants away from the first. One keeps the written vowel." },
+                       Spec { "formbreath", "breath", "vowel air",
+                              "Breath: noise through the vowel. Zero is a clean formant." },
+                       Spec { "resodamp", "damp", "ring dull",
+                              "Damp: dulls the resonator. Zero stays bright." },
+                       Spec { "resotune", "ring", "semis",
+                              "Ring: moves the resonator in semitones from the cutoff." },
+                       Spec { "resostack", "stack", "octave ring",
+                              "Stack: adds a second ring an octave up. Zero is one pitch." } })
+        filter.push_back (addKnob (spec.id, spec.name, spec.hint, spec.tip));
+
+    for (int i = 1; i <= 4; ++i)
+    {
+        const auto n = juce::String (i);
+        lfo.push_back (addKnob ("lfo" + n + "rate", "rate", "hz",
+                                "LFO " + n + " rate. Rate is hertz. Sync steps through beat divisions. Pick one."));
+        lfo.push_back (addKnob ("lfo" + n + "depth", "depth", "amount",
+                                "LFO " + n + " depth. Zero leaves the chosen knob still."));
+    }
+    for (auto spec : { Spec { "compthresh", "thresh", "db",
+                              "Threshold: peaks above this get squeezed. Zero dB only catches full scale." },
+                       Spec { "compratio", "ratio", "squeeze",
+                              "Ratio: how hard those peaks are turned down. One leaves the sound alone." },
+                       Spec { "compgain", "makeup", "db",
+                              "Makeup: gain after the squeeze. Use it when a formant or filter drops the level. Zero is unity." },
+                       Spec { "limit", "limit", "ceiling",
+                              "Limit: ceiling after the compressor and the output level. Init is -1 dB, just under full scale, so a fresh patch does not clip. Peaks that cross it are flattened. 0 dB is as loud as the output will go." },
+                       Spec { "limitdist", "dist", "bend",
+                              "Dist: how hard the note is pushed into the limiter. Zero leaves everything under the ceiling clean. Full bends the whole sound so the clip is easy to hear. The logo trace is this output." } })
+        comp.push_back (addKnob (spec.id, spec.name, spec.hint, spec.tip));
+    for (auto spec : { Spec { "revsize", "size", "room",
+                              "Size: how long the reverb rings. Small is a tight box. Full is a long room." },
+                       Spec { "revdamp", "damp", "dull",
+                              "Damp: takes the brightness out of the repeats. Zero stays bright." },
+                       Spec { "revmix", "mix", "wet",
+                              "Mix: how much of the room is in the sound. Zero is dry." } })
+        reverb.push_back (addKnob (spec.id, spec.name, spec.hint, spec.tip));
+    for (auto spec : { Spec { "srclevel", "src", "source",
+                              "Source: how much of the main wave or Sam reaches the output. Full leaves it as played." },
+                       Spec { "sublevel", "sub", "sub",
+                              "Sub: how much of the sub oscillator reaches the output. Full leaves the sub mode as set." },
+                       Spec { "crushlevel", "crush", "crush",
+                              "Crush: how much of the bit crush is in the output. Full uses the wet knob as set. Zero leaves the note clean." },
+                       Spec { "filtmix", "filt", "filter",
+                              "Filter: blend from the dry note to the filtered one. Full is the whole filter. Zero skips it." },
+                       Spec { "delaylevel", "delay", "delay",
+                              "Delay: how much echo is in the output. Full uses the echo knob as set. Zero leaves the repeats out." },
+                       Spec { "compmix", "comp", "compress",
+                              "Compress: blend from the dry mix to the squeezed one. Full is the whole compressor. Zero skips it." } })
+        mix.push_back (addKnob (spec.id, spec.name, spec.hint, spec.tip));
+
+    auto styleTitle = [this] (juce::Label& label, const juce::String& text, juce::Colour colour)
+    {
+        label.setText (text, juce::dontSendNotification);
+        label.setFont (chicagoFont (16.f));
+        label.setColour (juce::Label::textColourId, colour);
+        label.setJustificationType (juce::Justification::centredLeft);
+        label.setLookAndFeel (&look);
+        addAndMakeVisible (label);
+    };
+    for (int i = 0; i < 4; ++i)
+    {
+        styleTitle (lfoTitle[i], "lfo " + juce::String (i + 1), kLfoCol[i]);
+        lfoTitle[i].setVisible (false);
+        auto& tab = lfoTab[i];
+        tab.setButtonText ("lfo " + juce::String (i + 1));
+        tab.setLookAndFeel (&look);
+        tab.setTooltip ("Show LFO " + juce::String (i + 1) + ". All four keep running.");
+        tab.onClick = [this, i]
+        {
+            lfoPage = i;
+            resized();
+        };
+        addAndMakeVisible (tab);
+    }
 
     keyboard.setLookAndFeel (&look);
     keyboard.setColour (juce::MidiKeyboardComponent::whiteNoteColourId, kPaper);
@@ -254,26 +808,215 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     keyboard.setColour (juce::MidiKeyboardComponent::keyDownOverlayColourId, juce::Colour (0x55221c16));
     keyboard.setAvailableRange (36, 84);
     keyboard.setScrollButtonsVisible (false);
-    addAndMakeVisible (keyboard);
+    keyboard.setVisible (false);
+
+    auto styleButton = [this] (juce::TextButton& button, const juce::String& tip)
+    {
+        button.setLookAndFeel (&look);
+        button.setColour (juce::TextButton::buttonColourId, kPaper);
+        button.setColour (juce::TextButton::textColourOffId, kPencil);
+        button.setTooltip (tip);
+        button.addMouseListener (this, true);
+        addAndMakeVisible (button);
+    };
+    initButton.setButtonText ("init");
+    saveButton.setButtonText ("save");
+    loadButton.setButtonText ("load");
+    styleButton (initButton, "Init: sine, poly, sub sine at full mix, source envelopes on 1/8, sub attack on 1 bar, output and effect places as the opening patch.");
+    styleButton (saveButton, "Save: write the knobs and the Sam word to a preset.");
+    styleButton (loadButton, "Load: read a preset back in.");
+    styleButton (lockButton, "Lock: render the word now. Return in the phrase box does the same. Speed, pitch, mouth, and throat also follow a note you are already holding. A line that does not fit is refused.");
+    lockButton.setButtonText ("lock");
+    initButton.onClick = [this] { initPreset(); };
+    saveButton.onClick = [this] { savePreset(); };
+    loadButton.onClick = [this] { loadPreset(); };
+    presetName = clicks.apvts.state.getProperty ("preset").toString();
+    presetBox.setFont (chicagoFont (15.f));
+    presetBox.setColour (juce::Label::textColourId, kPencil);
+    presetBox.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+    presetBox.setJustificationType (juce::Justification::centredLeft);
+    presetBox.setBorderSize (juce::BorderSize<int> (0, 6, 0, 4));
+    presetBox.setMinimumHorizontalScale (0.6f);
+    presetBox.setLookAndFeel (&look);
+    presetBox.setInterceptsMouseClicks (false, false);
+    addAndMakeVisible (presetBox);
+    showPreset();
+    lockButton.onClick = [this] { showNote (clicks.lockSpeech()); };
+
+    sayLabel.setText ("say", juce::dontSendNotification);
+    sayLabel.setFont (chicagoFont (15.f));
+    sayLabel.setColour (juce::Label::textColourId, kPencil);
+    sayLabel.setJustificationType (juce::Justification::centredLeft);
+    sayLabel.setLookAndFeel (&look);
+    sayLabel.setTooltip ("Say: the line to lock. Sam is Software Automatic Mouth, the 1982 speech program from Don't Ask Software. eSpeak NG is the other speech voice.");
+    sayLabel.addMouseListener (this, true);
+    addAndMakeVisible (sayLabel);
+
+    sayBox.setMultiLine (false);
+    sayBox.setReturnKeyStartsNewLine (false);
+    sayBox.setFont (chicagoFont (15.f));
+    sayBox.setIndents (6, 4);
+    sayBox.setInputRestrictions (40);
+    sayBox.setText ("hello", juce::dontSendNotification);
+    sayBox.setColour (juce::TextEditor::backgroundColourId, kPaper);
+    sayBox.setColour (juce::TextEditor::textColourId, kPencil);
+    sayBox.setColour (juce::TextEditor::outlineColourId, kPencil);
+    sayBox.setColour (juce::TextEditor::focusedOutlineColourId, kPencil);
+    sayBox.setTooltip ("Say: the line the speech voice speaks. Press return to lock it. A held note follows the line. A line that will not fit is refused, and the previous line stays.");
+    sayBox.addMouseListener (this, true);
+    sayBox.onTextChange = [this]
+    {
+        clicks.setSamText (sayBox.getText());
+    };
+    sayBox.onReturnKey = [this]
+    {
+        clicks.setSamText (sayBox.getText());
+        showNote (clicks.lockSpeech());
+    };
+    addAndMakeVisible (sayBox);
+
+    syncTick.setLookAndFeel (&look);
+    syncTick.setClickingTogglesState (true);
+    syncTick.setTooltip ("Tempo: Speed steps from a 32nd note to 8 bars. Speech fills that division and restarts on the beat. Repeat loops inside it. Off, Speed is a free playback rate.");
+    syncTick.addMouseListener (this, true);
+    addAndMakeVisible (syncTick);
+    syncAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        clicks.apvts, "slowsync", syncTick);
+
+    auto addTick = [this] (juce::ToggleButton& button, const char* id, const juce::String& tip)
+    {
+        button.setLookAndFeel (&look);
+        button.setClickingTogglesState (true);
+        button.setTooltip (tip);
+        button.addMouseListener (this, true);
+        addAndMakeVisible (button);
+        return std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (clicks.apvts, id, button);
+    };
+    delaySyncAttachment = addTick (delaySync, "delaysync", "Sync: delay time steps through beat divisions. Off, the knob is seconds.");
+    attackSyncAttachment = addTick (attackSync, "attacksync", "Sync: attack time steps through beat divisions. Off, the knob is seconds.");
+    decaySyncAttachment = addTick (decaySync, "decaysync", "Sync: decay time steps through beat divisions. Off, the knob is seconds.");
+    releaseSyncAttachment = addTick (releaseSync, "releasesync", "Sync: release time steps through beat divisions. Off, the knob is seconds.");
+    for (int i = 0; i < 4; ++i)
+    {
+        const juce::String id = "lfo" + juce::String (i + 1) + "sync";
+        lfoSyncAttachment[i] = addTick (lfoSync[i], id.toRawUTF8(),
+                                        "LFO " + juce::String (i + 1) + ": rate is hertz, sync is a beat division. One of the two is active.");
+    }
+    fAttackSyncAttachment = addTick (fAttackSync, "fattacksync", "Sync: filter attack steps through beat divisions.");
+    fDecaySyncAttachment = addTick (fDecaySync, "fdecaysync", "Sync: filter decay steps through beat divisions.");
+    fReleaseSyncAttachment = addTick (fReleaseSync, "freleasesync", "Sync: filter release steps through beat divisions.");
+    subAttackSyncAttachment = addTick (subAttackSync, "subattacksync", "Sync: sub attack steps through beat divisions. Off, the fader is seconds.");
+    subDecaySyncAttachment = addTick (subDecaySync, "subdecaysync", "Sync: sub decay steps through beat divisions. Off, the fader is seconds.");
+    subReleaseSyncAttachment = addTick (subReleaseSync, "subreleasesync", "Sync: sub release steps through beat divisions. Off, the fader is seconds.");
+
+    auto armPair = [] (juce::ToggleButton& button)
+    {
+        button.getProperties().set ("pair", 1);
+        button.setClickingTogglesState (false);
+        button.onClick = [&button]
+        {
+            const bool sync = button.getMouseXYRelative().x >= button.getWidth() / 2;
+            button.setToggleState (sync, juce::sendNotificationSync);
+        };
+    };
+    armPair (syncTick);
+    pitchTick.setLookAndFeel (&look);
+    pitchTick.setClickingTogglesState (true);
+    pitchTick.setTooltip ("Tape lets Speed drop the pitch and roughen the sound, the way a deck slows down. Fix keeps the pitch and only changes the time. Drift still moves every source, including Sam and eSpeak.");
+    pitchTick.addMouseListener (this, true);
+    addAndMakeVisible (pitchTick);
+    pitchAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        clicks.apvts, "pitchfix", pitchTick);
+    pitchTick.getProperties().set ("pairL", "tape");
+    pitchTick.getProperties().set ("pairR", "fix");
+    armPair (pitchTick);
+    armPair (delaySync);
+    armPair (attackSync);
+    armPair (decaySync);
+    armPair (releaseSync);
+    armPair (fAttackSync);
+    armPair (fDecaySync);
+    armPair (fReleaseSync);
+    armPair (subAttackSync);
+    armPair (subDecaySync);
+    armPair (subReleaseSync);
+    for (int i = 0; i < 4; ++i)
+        armPair (lfoSync[i]);
+
+    outMeter.setTooltip ("Output: how loud the sound is after the limiter. The mark is the ceiling.");
+    outMeter.setColour (juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+    outMeter.setInterceptsMouseClicks (true, false);
+    addAndMakeVisible (outMeter);
 
     setResizable (false, false);
-    setSize (1080, 720);
-    startTimerHz (12);
+    refreshSam();
+    refreshFilter();
+    refreshSource();
+    refreshCrush();
+    refreshLfo();
+    refreshScatter();
+    setSize (1216, 1066);
+    startTimerHz (30);
 }
 
 ClicksEditor::~ClicksEditor()
 {
     stopTimer();
+    tips.setLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
-    voiceBox.setLookAndFeel (nullptr);
+    initButton.setLookAndFeel (nullptr);
+    saveButton.setLookAndFeel (nullptr);
+    loadButton.setLookAndFeel (nullptr);
+    presetBox.setLookAndFeel (nullptr);
+    lockButton.setLookAndFeel (nullptr);
+    syncTick.setLookAndFeel (nullptr);
+    pitchTick.setLookAndFeel (nullptr);
+    delaySync.setLookAndFeel (nullptr);
+    attackSync.setLookAndFeel (nullptr);
+    decaySync.setLookAndFeel (nullptr);
+    releaseSync.setLookAndFeel (nullptr);
+    for (int i = 0; i < 4; ++i)
+    {
+        lfoSync[i].setLookAndFeel (nullptr);
+        lfoTitle[i].setLookAndFeel (nullptr);
+        lfoTab[i].setLookAndFeel (nullptr);
+        lfoShapeBox[i].setLookAndFeel (nullptr);
+        lfoDestBox[i].setLookAndFeel (nullptr);
+        lfoShapeLabel[i].setLookAndFeel (nullptr);
+        lfoDestLabel[i].setLookAndFeel (nullptr);
+    }
+    waveBox.setLookAndFeel (nullptr);
     polyBox.setLookAndFeel (nullptr);
+    scatBox.setLookAndFeel (nullptr);
+    subBox.setLookAndFeel (nullptr);
+    subWaveBox.setLookAndFeel (nullptr);
+    filtTypeBox.setLookAndFeel (nullptr);
+    filtWhereBox.setLookAndFeel (nullptr);
+    fxOrderBox.setLookAndFeel (nullptr);
+    fxOrderLabel.setLookAndFeel (nullptr);
+    for (int i = 0; i < 6; ++i)
+        slotBox[i].setLookAndFeel (nullptr);
+    lfoShapeBox[0].setLookAndFeel (nullptr);
+    lfoShapeBox[1].setLookAndFeel (nullptr);
+    fAttackSync.setLookAndFeel (nullptr);
+    fDecaySync.setLookAndFeel (nullptr);
+    fReleaseSync.setLookAndFeel (nullptr);
+    subAttackSync.setLookAndFeel (nullptr);
+    subDecaySync.setLookAndFeel (nullptr);
+    subReleaseSync.setLookAndFeel (nullptr);
+    lfoDestBox[0].setLookAndFeel (nullptr);
+    lfoDestBox[1].setLookAndFeel (nullptr);
+    lfoDestLabel[0].setLookAndFeel (nullptr);
+    lfoDestLabel[1].setLookAndFeel (nullptr);
+    sayLabel.setLookAndFeel (nullptr);
     keyboard.setLookAndFeel (nullptr);
-    for (auto* group : { &generator, &output })
+    for (auto* group : { &generator, &sam, &speak, &filter, &output, &env, &senv, &fenv, &comp, &reverb, &wobble, &mix, &lfo })
         for (auto& knob : *group)
             if (knob != nullptr)
             {
                 knob->slider.setLookAndFeel (nullptr);
                 knob->label.setLookAndFeel (nullptr);
+                knob->hint.setLookAndFeel (nullptr);
             }
 }
 
@@ -282,16 +1025,63 @@ juce::Font ClicksEditor::chicagoFont (float height) const
     return look.faceFont (height);
 }
 
-std::unique_ptr<ClicksEditor::Knob> ClicksEditor::addKnob (const juce::String& id, const juce::String& name)
+void ClicksEditor::tryMidiLearnFrom (juce::Component* target, const juce::MouseEvent& event)
+{
+    if (! event.mods.isPopupMenu() && ! event.mods.isRightButtonDown())
+        return;
+    while (target != nullptr)
+    {
+        const auto paramId = target->getProperties()["paramId"].toString();
+        if (paramId.isNotEmpty())
+        {
+            if (event.mods.isShiftDown())
+            {
+                clicks.clearMidiMappingForParam (paramId);
+                showNote ("MIDI mapping cleared for " + clicks.paramNameForId (paramId) + ".");
+            }
+            else
+            {
+                clicks.armMidiLearn (paramId);
+                learnUntil = juce::Time::getMillisecondCounter() + 15000;
+                const int cc = clicks.midiCcForParam (paramId);
+                if (cc >= 0)
+                    showNote ("MIDI learn: move CC " + juce::String (cc + 1) + " or twist any control to remap "
+                              + clicks.paramNameForId (paramId) + ".");
+                else
+                    showNote ("MIDI learn: move a MIDI control for "
+                              + clicks.paramNameForId (paramId) + ". Shift-right-click clears.");
+            }
+            return;
+        }
+        target = target->getParentComponent();
+    }
+}
+
+void ClicksEditor::mouseDown (const juce::MouseEvent& event)
+{
+    tryMidiLearnFrom (event.eventComponent, event);
+}
+
+std::unique_ptr<ClicksEditor::Knob> ClicksEditor::addKnob (const juce::String& id, const juce::String& name,
+                                                         const juce::String& hint, const juce::String& tip)
 {
     auto knob = std::make_unique<Knob>();
+    auto watch = [this, tip] (auto& c)
+    {
+        c.setTooltip (tip);
+        c.addMouseListener (this, true);
+    };
+
     knob->slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    knob->slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 74, 22);
+    knob->slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 72, 16);
+    knob->slider.getProperties().set ("paramId", id);
+    knob->slider.getProperties().set ("face", knobFaceFor (id));
     knob->slider.setColour (juce::Slider::textBoxTextColourId, kPencil);
     knob->slider.setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
     knob->slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
     knob->slider.setLookAndFeel (&look);
     knob->slider.setName (name);
+    watch (knob->slider);
     addAndMakeVisible (knob->slider);
 
     knob->label.setText (name, juce::dontSendNotification);
@@ -299,11 +1089,30 @@ std::unique_ptr<ClicksEditor::Knob> ClicksEditor::addKnob (const juce::String& i
     knob->label.setFont (chicagoFont (15.f));
     knob->label.setColour (juce::Label::textColourId, kPencil);
     knob->label.setLookAndFeel (&look);
+    watch (knob->label);
     addAndMakeVisible (knob->label);
+
+    knob->hint.setText (hint, juce::dontSendNotification);
+    knob->hint.setJustificationType (juce::Justification::centred);
+    knob->hint.setFont (chicagoFont (12.f));
+    knob->hint.setMinimumHorizontalScale (0.6f);
+    knob->hint.setColour (juce::Label::textColourId, kPencil.withAlpha (0.88f));
+    knob->hint.setLookAndFeel (&look);
+    knob->hint.setVisible (false);
+    addAndMakeVisible (knob->hint);
 
     knob->attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         clicks.apvts, id, knob->slider);
     return knob;
+}
+
+std::unique_ptr<ClicksEditor::Knob> ClicksEditor::addFader (const juce::String& id, const juce::String& name,
+                                                           const juce::String& hint, const juce::String& tip)
+{
+    auto fader = addKnob (id, name, hint, tip);
+    fader->slider.setSliderStyle (juce::Slider::LinearVertical);
+    fader->slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 36, 14);
+    return fader;
 }
 
 void ClicksEditor::placeRow (std::vector<std::unique_ptr<Knob>>& knobs, int begin, int count,
@@ -311,17 +1120,16 @@ void ClicksEditor::placeRow (std::vector<std::unique_ptr<Knob>>& knobs, int begi
 {
     if ((int) knobs.size() < begin + count || count <= 0 || columns <= 0)
         return;
-    row.removeFromBottom (12);
     const int col = row.getWidth() / columns;
     for (int i = 0; i < count; ++i)
     {
         auto* knob = knobs[(size_t) (begin + i)].get();
         if (knob == nullptr)
             continue;
-        auto cell = row.removeFromLeft (col).reduced (6, 0);
-        knob->label.setBounds (cell.removeFromTop (20));
-        cell.removeFromTop (4);
-        knob->slider.setBounds (cell.removeFromTop (juce::jmin (cell.getHeight(), 132)));
+        auto cell = row.removeFromLeft (col).reduced (1, 0);
+        knob->label.setBounds (cell.removeFromTop (14));
+        knob->hint.setBounds ({});
+        knob->slider.setBounds (cell);
     }
 }
 
@@ -332,84 +1140,1403 @@ void ClicksEditor::paint (juce::Graphics& g)
     else
         g.fillAll (juce::Colours::black);
 
-    g.setColour (juce::Colours::black.withAlpha (0.38f));
-    g.fillRect (0, 0, getWidth(), 72);
-
-    g.setFont (chicagoFont (30.f));
-    g.setColour (juce::Colours::white);
-    g.drawText ("NULL GLITCH", 28, 14, 420, 36, juce::Justification::centredLeft);
-    g.setFont (chicagoFont (16.f));
-    g.setColour (juce::Colours::white.withAlpha (0.86f));
-    g.drawText ("hold a key", getWidth() - 210, 22, 178, 22, juce::Justification::centredRight);
-
-    const float level = juce::jlimit (0.f, 1.f, clicks.meter.load() * 2.4f);
-    const int cells = 16;
-    const int lit = (int) std::lround (level * (float) cells);
-    for (int i = 0; i < cells; ++i)
+    if (! titleBand.isEmpty())
     {
-        g.setColour (i < lit ? juce::Colours::white : juce::Colours::white.withAlpha (0.35f));
-        const float h = 10.f + (float) (i % 3) * 2.f;
-        g.fillRect (250.f + (float) i * 12.f, 46.f - h * 0.2f, 7.f, h);
+        auto band = titleBand;
+        if (! initButton.getBounds().isEmpty())
+            band.setBottom (initButton.getBottom() + 2);
+        g.setColour (juce::Colours::black.withAlpha (0.42f));
+        g.fillRect (band);
     }
 
-    auto paper = [&] (juce::Rectangle<int> panel, uint32_t salt, const juce::String& title)
+    if (! scopePanel.isEmpty())
+    {
+        const int w = std::max (1, scopePanel.getWidth());
+        const int h = std::max (1, scopePanel.getHeight());
+        // Bake the wordmark once and keep the PNG's transparency. The plate is
+        // cleared, so a later scope repaint does not stack another copy on top.
+        if (logoPlate.isNull() || logoPlate.getWidth() != w || logoPlate.getHeight() != h)
+        {
+            logoPlate = juce::Image (juce::Image::ARGB, w, h, true);
+            if (mark.isValid())
+            {
+                juce::Graphics ig (logoPlate);
+                ig.drawImage (mark, juce::Rectangle<float> (0.f, 0.f, (float) w, (float) h),
+                              juce::RectanglePlacement::stretchToFit);
+            }
+            juce::Image::BitmapData pix (logoPlate, juce::Image::BitmapData::readWrite);
+            for (int y = 0; y < h; ++y)
+            {
+                for (int x = 0; x < w; ++x)
+                {
+                    const auto c = pix.getPixelColour (x, y);
+                    const float a = c.getFloatAlpha();
+                    if (a < 0.04f)
+                    {
+                        pix.setPixelColour (x, y, juce::Colours::transparentBlack);
+                        continue;
+                    }
+                    auto punch = [] (float v)
+                    {
+                        v = (v - 0.45f) * 1.35f + 0.45f;
+                        return juce::jlimit (0.f, 1.f, v);
+                    };
+                    const float r = punch (c.getFloatRed());
+                    const float gc = punch (c.getFloatGreen());
+                    const float b = punch (c.getFloatBlue());
+                    pix.setPixelColour (x, y, juce::Colour::fromFloatRGBA (r, gc, b, a));
+                }
+            }
+        }
+    }
+
+    auto paper = [&] (juce::Rectangle<int> panel, const juce::Image& plate, uint32_t salt,
+                      const juce::String& title, int titleDrop)
     {
         if (panel.isEmpty())
             return;
-        const auto card = wobbleRect (panel.toFloat(), salt);
-        g.setColour (kPaper.withAlpha (0.94f));
-        g.fillPath (card);
-        g.setTiledImageFill (grain, 0.f, 0.f, 0.85f);
-        g.fillPath (card);
-        auto ghost = card;
-        ghost.applyTransform (juce::AffineTransform::translation (1.1f, 0.8f));
-        g.setColour (kPencil.withAlpha (0.35f));
-        g.strokePath (ghost, juce::PathStrokeType (1.2f));
+        if (plate.isValid())
+        {
+            // Crop inside the solid pixels. The scan's clear margin starts further out than this.
+            const bool wide = panel == outPanel;
+            const float cropL = wide ? 0.040f : 0.030f;
+            const float cropR = wide ? 0.042f : 0.030f;
+            const float cropT = wide ? 0.130f : 0.026f;
+            const float cropB = wide ? 0.150f : 0.030f;
+            const int sw = plate.getWidth();
+            const int sh = plate.getHeight();
+            const int sx = (int) std::lround ((float) sw * cropL);
+            const int sy = (int) std::lround ((float) sh * cropT);
+            const int sW = juce::jmax (1, (int) std::lround ((float) sw * (1.f - cropL - cropR)));
+            const int sH = juce::jmax (1, (int) std::lround ((float) sh * (1.f - cropT - cropB)));
+            // The sheet is the panel. The starfield stays in the gaps between panels.
+            const auto dest = panel;
+            g.setColour (kPaper);
+            g.fillRect (dest);
+            g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+            g.drawImage (plate, dest.getX(), dest.getY(), dest.getWidth(), dest.getHeight(),
+                         sx, sy, sW, sH, false);
+        }
+        else
+        {
+            const auto card = wobbleRect (panel.toFloat(), salt);
+            g.setColour (kPaper.withAlpha (0.68f));
+            g.fillPath (card);
+            g.setTiledImageFill (grain, 0.f, 0.f, 0.85f);
+            g.fillPath (card);
+            g.setColour (kPencil);
+            g.strokePath (card, juce::PathStrokeType (1.8f));
+        }
         g.setColour (kPencil);
-        g.strokePath (card, juce::PathStrokeType (1.8f));
-        g.setFont (chicagoFont (22.f));
-        g.drawText (title, panel.reduced (18, 8).removeFromTop (30), juce::Justification::centredLeft);
+        g.setFont (chicagoFont (26.f));
+        g.drawText (title, panel.reduced (20, 0).withTrimmedTop (titleDrop).removeFromTop (30),
+                    juce::Justification::centredLeft);
     };
-    paper (genPanel, 0x61u, "generator");
-    paper (outPanel, 0xC3u, "output");
+    paper (genPanel, look.panelMain, 0x61u, "source", 14);
+    paper (filterPanel, look.panelMain, 0x9Au, "effects", 14);
+    paper (outPanel, look.panelOut, 0x2Bu, "output", juce::jmax (16, outPanel.getHeight() * 11 / 100));
+
+    if (! presetBox.getBounds().isEmpty())
+    {
+        auto box = presetBox.getBounds().toFloat();
+        g.setColour (kPaper);
+        g.fillRect (box);
+        g.setColour (kPencil);
+        g.drawRect (box, 1.15f);
+    }
+
+    if (logoPlate.isValid() && ! scopePanel.isEmpty())
+    {
+        g.drawImageAt (logoPlate, scopePanel.getX(), scopePanel.getY());
+        if (scopeTrace.size() >= 2)
+        {
+            const auto plot = scopePanel.reduced (2, 2);
+            const float mid = (float) plot.getCentreY();
+            const float amp = (float) plot.getHeight() * 0.46f;
+            juce::Path trace;
+            const int n = (int) scopeTrace.size();
+            for (int i = 0; i < n; ++i)
+            {
+                const float x = (float) plot.getX() + (float) plot.getWidth() * (float) i / (float) (n - 1);
+                const float y = mid - scopeTrace[(size_t) i] * amp;
+                if (i == 0)
+                    trace.startNewSubPath (x, y);
+                else
+                    trace.lineTo (x, y);
+            }
+            g.setColour (juce::Colour (0xffff4ad0).withAlpha (0.55f));
+            g.strokePath (trace, juce::PathStrokeType (5.5f, juce::PathStrokeType::curved,
+                                                       juce::PathStrokeType::rounded));
+            g.setColour (juce::Colour (0xff3dfff0));
+            g.strokePath (trace, juce::PathStrokeType (2.2f, juce::PathStrokeType::curved,
+                                                       juce::PathStrokeType::rounded));
+        }
+    }
+
+    auto heading = [&] (juce::Rectangle<int> r, const juce::String& text, float alpha, float pt = 22.f)
+    {
+        if (r.isEmpty())
+            return;
+        g.setColour (kPencil.withAlpha (alpha));
+        g.setFont (chicagoFont (pt));
+        g.drawText (text, r, juce::Justification::centredLeft);
+    };
+    const int wavePick = (int) std::lround (clicks.apvts.getRawParameterValue ("wave")->load());
+    const bool samOn = wavePick >= 6;
+    const int filtType = (int) clicks.apvts.getRawParameterValue ("filttype")->load();
+    auto frame = [&] (juce::Rectangle<int> r)
+    {
+        if (r.isEmpty())
+            return;
+        g.setColour (kPencil.withAlpha (0.55f));
+        g.drawRect (r.toFloat().reduced (0.5f), 1.3f);
+    };
+    frame (tapeFrame);
+    frame (lfoPanel);
+    frame (subFrame);
+    frame (filtFrame);
+    frame (formFrame);
+    frame (ringFrame);
+    frame (crushFrame);
+    frame (delayFrame);
+    frame (revFrame);
+    frame (compFrame);
+    if (look.tapeDeck.isValid() && tapeArt.getWidth() > 36 && tapeArt.getHeight() > 36)
+    {
+        const auto& img = look.tapeDeck;
+        const auto area = tapeArt.toFloat();
+        const float aspect = (float) img.getWidth() / (float) juce::jmax (1, img.getHeight());
+        float h = area.getHeight();
+        float w = h * aspect;
+        if (w > area.getWidth())
+        {
+            w = area.getWidth();
+            h = w / aspect;
+        }
+        g.setOpacity (0.9f);
+        g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+        g.drawImage (img, juce::Rectangle<float> (area.getCentreX() - w * 0.5f,
+                                                  area.getCentreY() - h * 0.5f, w, h),
+                     juce::RectanglePlacement::stretchToFit);
+        g.setOpacity (1.f);
+    }
+    auto drawWave = [&] (juce::Rectangle<int> plate, int slot, bool falling)
+    {
+        if (plate.getWidth() < 24 || plate.getHeight() < 16 || slot < 0 || slot > 4)
+            return;
+        const auto& img = look.wave[slot];
+        if (! img.isValid())
+            return;
+        auto area = plate.toFloat();
+        const float aspect = (float) img.getWidth() / (float) juce::jmax (1, img.getHeight());
+        float h = area.getHeight();
+        float w = h * aspect;
+        if (w > area.getWidth())
+        {
+            w = area.getWidth();
+            h = w / aspect;
+        }
+        const float x = area.getCentreX() - w * 0.5f;
+        const float y = area.getCentreY() - h * 0.5f;
+        g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+        if (falling)
+        {
+            g.saveState();
+            g.addTransform (juce::AffineTransform::verticalFlip (y + h * 0.5f));
+        }
+        g.drawImage (img, juce::Rectangle<float> (x, y, w, h), juce::RectanglePlacement::stretchToFit);
+        if (falling)
+            g.restoreState();
+    };
+    const int wavePickArt = (int) std::lround (clicks.apvts.getRawParameterValue ("wave")->load());
+    const int subPickArt = (int) std::lround (clicks.apvts.getRawParameterValue ("subwave")->load());
+    static const int waveArtMap[] = { 0, 1, 1, 2, 3, 4 };
+    static const int subArtMap[] = { 0, 2, 1, 1, 3 };
+    const int mainArt = wavePickArt >= 0 && wavePickArt < 6 ? waveArtMap[wavePickArt] : -1;
+    const int subArt = subPickArt >= 0 && subPickArt < 5 ? subArtMap[subPickArt] : -1;
+    drawWave (wavePlate, mainArt, wavePickArt == 2);
+    drawWave (subWavePlate, subArt, subPickArt == 3);
+    auto routed = [] (juce::Rectangle<int> r) { return r.withTrimmedRight (56); };
+    heading (routed (playTag), "tape", 0.9f, 22.f);
+    heading (lfoTag, "lfo", 0.9f, 22.f);
+    heading (samTag, wavePick == 7 ? "speak" : "sam", samOn ? 0.9f : 0.35f);
+    heading (subTag, "sub oscillator", 0.9f, 22.f);
+    heading (routed (crushTag), "crush", 0.9f, 22.f);
+    heading (envTag, "source", 0.9f);
+    heading (subEnvTag, "sub", 0.9f);
+    heading (routed (filtTag), "filter", 0.9f);
+    heading (formantTag, "formant", filtType == 5 ? 0.9f : 0.35f);
+    heading (ringTag, "resonator", filtType == 6 ? 0.9f : 0.35f);
+    heading (filtEnvTag, "env", 0.9f);
+    heading (routed (delayTag), "delay", 0.9f);
+    heading (routed (revTag), "reverb", 0.9f);
+    heading (routed (compTag), "compress", 0.9f);
+    auto holdPlate = [&] (juce::Rectangle<int> r)
+    {
+        if (r.isEmpty())
+            return;
+        auto box = r.toFloat();
+        if (look.switchArt.isValid())
+        {
+            g.setOpacity (0.55f);
+            g.drawImage (look.switchArt, box, juce::RectanglePlacement::stretchToFit);
+            g.setOpacity (1.f);
+        }
+        else
+        {
+            g.setColour (kPaper);
+            g.fillRect (box);
+            g.setColour (kPencil);
+            g.drawRect (box, 1.15f);
+            const float y = box.getCentreY();
+            g.drawLine (box.getX() + 10.f, y, box.getRight() - 10.f, y, 1.6f);
+        }
+    };
+    holdPlate (envHoldPlate);
+    holdPlate (subHoldPlate);
+    holdPlate (filtHoldPlate);
+    if (! meterBounds.isEmpty())
+    {
+        auto bar = meterBounds.toFloat();
+        const float floorDb = -48.f;
+        auto dbOf = [] (float lin)
+        {
+            return lin < 1.0e-5f ? -60.f : 20.f * std::log10 (lin);
+        };
+        auto yOf = [&] (float db)
+        {
+            const float t = juce::jlimit (0.f, 1.f, (db - floorDb) / -floorDb);
+            return bar.getBottom() - t * bar.getHeight();
+        };
+        g.setColour (kPaper);
+        g.fillRect (bar);
+        g.setColour (kPencil);
+        g.drawRect (bar, 1.2f);
+        const float levelY = yOf (dbOf (meterShown));
+        if (levelY < bar.getBottom() - 1.f)
+        {
+            if (look.barFill.isValid())
+            {
+                g.saveState();
+                g.reduceClipRegion (juce::Rectangle<int> ((int) std::floor (bar.getX()),
+                                                         (int) std::floor (levelY),
+                                                         (int) std::ceil (bar.getWidth()) + 1,
+                                                         (int) std::ceil (bar.getBottom() - levelY) + 1));
+                const auto c = bar.getCentre();
+                g.addTransform (juce::AffineTransform::rotation (juce::MathConstants<float>::halfPi, c.x, c.y));
+                auto spun = juce::Rectangle<float> (c.x, c.y, 0.f, 0.f)
+                                .withSizeKeepingCentre (bar.getHeight(), bar.getWidth());
+                g.drawImage (look.barFill, spun, juce::RectanglePlacement::stretchToFit);
+                g.restoreState();
+            }
+            else
+            {
+                g.setColour (kPencil);
+                g.fillRect (bar.getX() + 2.f, levelY, bar.getWidth() - 4.f, bar.getBottom() - levelY - 1.f);
+            }
+        }
+        const float ceilDb = clicks.apvts.getRawParameterValue ("limit")->load();
+        const float ceilY = yOf (ceilDb);
+        g.setColour (juce::Colour (0xff3dfff0));
+        g.fillRect (bar.getX() - 3.f, ceilY - 1.f, bar.getWidth() + 6.f, 2.f);
+        const float holdY = yOf (dbOf (meterHold));
+        g.setColour (kPencil);
+        g.fillRect (bar.getX() + 2.f, holdY, bar.getWidth() - 4.f, 1.5f);
+        g.setFont (chicagoFont (15.f));
+        g.drawText ("out", outMeter.getBounds().removeFromTop (16), juce::Justification::centred);
+    }
+
+    if (bot.isValid() && ! botPanel.isEmpty())
+    {
+        const auto face = botImageBounds();
+        const int fw = std::max (1, (int) std::lround (face.getWidth()));
+        const int fh = std::max (1, (int) std::lround (face.getHeight()));
+        if (botPlate.isNull() || botPlate.getWidth() != fw || botPlate.getHeight() != fh)
+        {
+            botPlate = juce::Image (juce::Image::ARGB, fw, fh, true);
+            botWash = juce::Image (juce::Image::ARGB, fw, fh, true);
+            {
+                juce::Graphics ig (botPlate);
+                ig.drawImage (bot, juce::Rectangle<float> (0.f, 0.f, (float) fw, (float) fh),
+                              juce::RectanglePlacement::stretchToFit);
+            }
+            juce::Image::BitmapData pix (botPlate, juce::Image::BitmapData::readWrite);
+            juce::Image::BitmapData wash (botWash, juce::Image::BitmapData::writeOnly);
+            const float feather = 18.f;
+            for (int y = 0; y < fh; ++y)
+            {
+                for (int x = 0; x < fw; ++x)
+                {
+                    const float dx = (float) std::min (x, fw - 1 - x);
+                    const float dy = (float) std::min (y, fh - 1 - y);
+                    float t = juce::jlimit (0.f, 1.f, std::min (dx, dy) / feather);
+                    t = t * t * (3.f - 2.f * t);
+                    const auto c = pix.getPixelColour (x, y);
+                    pix.setPixelColour (x, y, c.withAlpha (c.getFloatAlpha() * t));
+                    wash.setPixelColour (x, y, kPaper.withAlpha (0.62f * t));
+                }
+            }
+        }
+        g.drawImage (botPlate, face, juce::RectanglePlacement::stretchToFit);
+
+        // Mouth screen of the robot picture. The painted wave is covered so the
+        // trace here is only the live Sam voice.
+        const float ix0 = 0.145f, iy0 = 0.668f, ix1 = 0.825f, iy1 = 0.900f;
+        auto mouth = juce::Rectangle<float> (face.getX() + face.getWidth() * ix0,
+                                              face.getY() + face.getHeight() * iy0,
+                                              face.getWidth() * (ix1 - ix0),
+                                              face.getHeight() * (iy1 - iy0));
+        g.setColour (juce::Colour (0xff07080c));
+        g.fillRect (mouth);
+        g.setColour (juce::Colours::white.withAlpha (0.16f));
+        for (int i = 1; i < 4; ++i)
+            g.drawHorizontalLine ((int) (mouth.getY() + mouth.getHeight() * (float) i / 4.f),
+                                  mouth.getX(), mouth.getRight());
+        for (int i = 1; i < 6; ++i)
+            g.drawVerticalLine ((int) (mouth.getX() + mouth.getWidth() * (float) i / 6.f),
+                                mouth.getY(), mouth.getBottom());
+
+        float peak = 0.f;
+        for (float s : samTrace)
+            peak = std::max (peak, std::abs (s));
+        if (samOn && samTrace.size() >= 2 && peak > 0.02f)
+        {
+            juce::Path trace;
+            const int n = (int) samTrace.size();
+            const float mid = mouth.getCentreY();
+            const float amp = mouth.getHeight() * 0.42f;
+            for (int i = 0; i < n; ++i)
+            {
+                const float x = mouth.getX() + mouth.getWidth() * (float) i / (float) (n - 1);
+                const float y = mid - samTrace[(size_t) i] * amp;
+                if (i == 0)
+                    trace.startNewSubPath (x, y);
+                else
+                    trace.lineTo (x, y);
+            }
+            g.setColour (juce::Colour (0xff7dffe0).withAlpha (0.45f));
+            g.strokePath (trace, juce::PathStrokeType (3.4f, juce::PathStrokeType::curved,
+                                                       juce::PathStrokeType::rounded));
+            g.setColour (juce::Colour (0xffd8fff4));
+            g.strokePath (trace, juce::PathStrokeType (1.5f, juce::PathStrokeType::curved,
+                                                       juce::PathStrokeType::rounded));
+        }
+        if (! samOn)
+            g.drawImage (botWash, face, juce::RectanglePlacement::stretchToFit);
+    }
+}
+
+juce::Rectangle<float> ClicksEditor::botImageBounds() const
+{
+    if (! bot.isValid() || botPanel.isEmpty())
+        return {};
+    return juce::RectanglePlacement (juce::RectanglePlacement::centred | juce::RectanglePlacement::onlyReduceInSize)
+        .appliedTo (bot.getBounds().toFloat(), botPanel.toFloat());
+}
+
+void ClicksEditor::paintOverChildren (juce::Graphics&)
+{
 }
 
 void ClicksEditor::resized()
 {
-    auto area = getLocalBounds().reduced (18);
-    area.removeFromTop (58);
-    auto keys = area.removeFromBottom (100);
-    area.removeFromBottom (14);
+    const int wantW = 1216;
+    const int wantH = 1066;
+    if (getWidth() != wantW || getHeight() != wantH)
+    {
+        setSize (wantW, wantH);
+        return;
+    }
 
-    auto left = area.removeFromLeft ((area.getWidth() - 16) / 2);
-    area.removeFromLeft (16);
-    genPanel = left;
-    outPanel = area;
-    keyboard.setKeyWidth (juce::jmax (12.f, (float) keys.getWidth() / 29.f));
-    keyboard.setBounds (keys.reduced (4, 0));
+    auto area = getLocalBounds().reduced (8);
+    const int gap = 14;
+    const int colW = (area.getWidth() - gap) / 2;
+    auto left = area.removeFromLeft (colW);
+    area.removeFromLeft (gap);
 
-    auto gen = genPanel.reduced (16, 12);
-    gen.removeFromTop (34);
-    auto menus = gen.removeFromTop (56);
-    auto voiceCol = menus.removeFromLeft (menus.getWidth() / 2).reduced (6, 0);
-    auto polyCol = menus.reduced (6, 0);
-    voiceLabel.setBounds (voiceCol.removeFromTop (18));
-    voiceBox.setBounds (voiceCol.reduced (0, 4));
-    polyLabel.setBounds (polyCol.removeFromTop (18));
-    polyBox.setBounds (polyCol.reduced (0, 4));
+    float aspect = 800.f / 205.f;
+    if (mark.isValid() && mark.getHeight() > 0)
+        aspect = (float) mark.getWidth() / (float) mark.getHeight();
+    const int logoW = area.getWidth();
+    const int logoH = std::max (1, (int) std::lround ((float) logoW / std::max (0.01f, aspect)));
+    scopePanel = juce::Rectangle<int> (area.getX(), area.getY(), logoW, logoH);
 
-    const int genRow = gen.getHeight() / 2;
-    placeRow (generator, 0, 4, 4, gen.removeFromTop (genRow));
-    placeRow (generator, 4, 3, 4, gen);
+    auto bar = left.removeFromTop (24);
+    titleBand = bar;
+    left.removeFromTop (gap);
+    initButton.setBounds (bar.removeFromLeft (64).reduced (0, 1));
+    bar.removeFromLeft (4);
+    saveButton.setBounds (bar.removeFromLeft (64).reduced (0, 1));
+    bar.removeFromLeft (4);
+    loadButton.setBounds (bar.removeFromLeft (64).reduced (0, 1));
+    bar.removeFromLeft (8);
+    presetBox.setBounds (bar.reduced (0, 1));
 
-    auto out = outPanel.reduced (16, 12);
-    out.removeFromTop (34);
-    const int outRow = out.getHeight() / 2;
-    placeRow (output, 0, 4, 4, out.removeFromTop (outRow));
-    placeRow (output, 4, 4, 4, out);
+    const int dropH = 28;
+    genPanel = left.removeFromTop (832);
+    left.removeFromTop (gap);
+    outPanel = left;
+    area.removeFromTop (logoH + gap);
+    filterPanel = area;
+
+    auto placeDrop = [] (juce::Label& caption, juce::ComboBox& box, juce::Rectangle<int> bounds)
+    {
+        caption.setBounds (bounds.removeFromLeft (juce::jmin (72, bounds.getWidth() / 3)));
+        box.setBounds (bounds.reduced (0, 1));
+    };
+    auto placeTight = [&] (std::vector<std::unique_ptr<Knob>>& knobs, int begin, int count,
+                           int cellW, juce::Rectangle<int> row)
+    {
+        row = row.removeFromLeft (juce::jmin (row.getWidth(), cellW * count));
+        placeRow (knobs, begin, count, count, row);
+    };
+
+    auto gen = genPanel.withTrimmedLeft (14).withTrimmedRight (14)
+                       .withTrimmedTop (8).withTrimmedBottom (12);
+    gen.removeFromTop (42);
+    auto placeProminent = [this] (Knob& knob, juce::Rectangle<int> cell, float title)
+    {
+        cell = cell.reduced (1, 0);
+        knob.label.setFont (chicagoFont (title));
+        knob.label.setBounds (cell.removeFromTop ((int) title + 4));
+        knob.hint.setBounds ({});
+        knob.slider.setBounds (cell);
+    };
+
+    auto placeCells = [] (std::initializer_list<Knob*> knobs, juce::Rectangle<int> row)
+    {
+        const int n = (int) knobs.size();
+        if (n <= 0)
+            return;
+        const int col = row.getWidth() / n;
+        for (auto* knob : knobs)
+        {
+            auto cell = row.removeFromLeft (col);
+            if (knob == nullptr)
+                continue;
+            knob->label.setBounds (cell.removeFromTop (14));
+            knob->hint.setBounds ({});
+            knob->slider.setBounds (cell);
+        }
+    };
+
+    {
+        const int faceW = 156;
+        auto band = gen.removeFromTop (160);
+        botPanel = band.removeFromRight (faceW).reduced (6, 2);
+        auto waveRow = band.removeFromTop (120);
+        if (generator.size() > 10 && generator[10] != nullptr)
+            placeProminent (*generator[10], waveRow.removeFromLeft (120), 15.f);
+        if (generator.size() > 14 && generator[14] != nullptr)
+            placeProminent (*generator[14], waveRow.removeFromLeft (100), 15.f);
+        auto lists = waveRow.reduced (4, 0);
+        wavePlate = lists.removeFromTop (58).reduced (0, 2);
+        lists.removeFromTop (2);
+        placeDrop (waveLabel, waveBox, lists.removeFromTop (dropH));
+        lists.removeFromTop (4);
+        placeDrop (polyLabel, polyBox, lists.removeFromTop (dropH));
+        samTag = band.removeFromTop (22);
+        auto sayRow = band;
+        sayLabel.setBounds (sayRow.removeFromLeft (36));
+        lockButton.setBounds (sayRow.removeFromRight (64).reduced (0, 1));
+        sayRow.removeFromRight (4);
+        sayBox.setBounds (sayRow.reduced (0, 1));
+    }
+    {
+        const auto voiceRow = gen.removeFromTop (96);
+        placeTight (sam, 0, 5, 96, voiceRow);
+        placeTight (speak, 0, 5, 96, voiceRow);
+    }
+
+    subFrame = gen.removeFromTop (146);
+    {
+        auto box = subFrame.reduced (6, 4);
+        subTag = box.removeFromTop (24);
+        auto lists = box.removeFromLeft (176);
+        placeDrop (subLabel, subBox, lists.removeFromTop (dropH));
+        lists.removeFromTop (4);
+        placeDrop (subWaveLabel, subWaveBox, lists.removeFromTop (dropH));
+        subWavePlate = lists.reduced (2, 2);
+        placeCells ({ generator.size() > 1 ? generator[1].get() : nullptr,
+                      generator.size() > 0 ? generator[0].get() : nullptr,
+                      generator.size() > 11 ? generator[11].get() : nullptr,
+                      generator.size() > 12 ? generator[12].get() : nullptr },
+                    box);
+    }
+
+    auto layFlat = [] (std::vector<std::unique_ptr<Knob>>& faders, juce::Rectangle<int> col,
+                       juce::ToggleButton* attack, juce::ToggleButton* decay, juce::ToggleButton* release,
+                       juce::Rectangle<int>* holdPlate)
+    {
+        juce::ToggleButton* ticks[5] = { attack, decay, nullptr, release, nullptr };
+        if (holdPlate != nullptr)
+            *holdPlate = {};
+        const int rows = juce::jmin (5, (int) faders.size());
+        if (rows <= 0)
+            return;
+        const int h = std::max (20, col.getHeight() / rows);
+        for (int i = 0; i < rows; ++i)
+        {
+            auto* fader = faders[(size_t) i].get();
+            if (fader == nullptr)
+                continue;
+            auto line = col.removeFromTop (h);
+            fader->slider.setSliderStyle (juce::Slider::LinearHorizontal);
+            fader->slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 40, 14);
+            fader->label.setBounds (line.removeFromLeft (36));
+            fader->hint.setBounds ({});
+            auto slot = line.removeFromRight (78).reduced (1, 3);
+            if (ticks[i] != nullptr)
+                ticks[i]->setBounds (slot);
+            else if (i == 2 && holdPlate != nullptr)
+                *holdPlate = slot;
+            fader->slider.setBounds (line.reduced (2, 2));
+        }
+    };
+
+    {
+        auto row = gen.removeFromTop (156);
+        auto leftEnv = row.removeFromLeft (row.getWidth() / 2).reduced (4, 0);
+        auto rightEnv = row.reduced (4, 0);
+        envTag = leftEnv.removeFromTop (22);
+        subEnvTag = rightEnv.removeFromTop (22);
+        layFlat (env, leftEnv, &attackSync, &decaySync, &releaseSync, &envHoldPlate);
+        layFlat (senv, rightEnv, &subAttackSync, &subDecaySync, &subReleaseSync, &subHoldPlate);
+    }
+
+    lfoPanel = gen;
+
+    auto filt = filterPanel.withTrimmedLeft (14).withTrimmedRight (14)
+                           .withTrimmedTop (8).withTrimmedBottom (12);
+    filt.removeFromTop (42);
+    {
+        const int avail = filt.getHeight();
+        int tapeH = 300;
+        int filtH = 136;
+        int pairH = 86;
+        int crushH = 84;
+        int delayH = 100;
+        int compH = 100;
+        const int over = tapeH + filtH + pairH + crushH + delayH + compH - avail;
+        if (over > 0)
+            tapeH = juce::jmax (236, tapeH - over);
+        tapeFrame = filt.removeFromTop (tapeH);
+        auto tape = tapeFrame.reduced (6, 4);
+        playTag = tape.removeFromTop (22);
+        const int knobRowH = juce::jmin (86, juce::jmax (64, tape.getHeight() / 3));
+        auto knobRow = tape.removeFromBottom (knobRowH);
+        tape.removeFromBottom (2);
+        const int artLeft = tape.getX() + (tape.getWidth() * 52) / 100;
+        tapeArt = juce::Rectangle<int> (artLeft, tape.getY(),
+                                        tape.getRight() - artLeft - 2, tape.getHeight()).reduced (2, 2);
+        if (generator.size() > 2 && generator[2] != nullptr)
+        {
+            const int speedW = juce::jmin (360, tape.getWidth());
+            const int speedH = juce::jmax (110, tape.getHeight() - (dropH + 2));
+            auto speedCol = tape.removeFromTop (speedH).removeFromLeft (speedW);
+            auto knobCell = speedCol.removeFromTop (juce::jmax (80, speedCol.getHeight() - 26));
+            generator[2]->slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 72, 16);
+            placeProminent (*generator[2], knobCell, 18.f);
+            auto disc = generator[2]->slider.getBounds();
+            const int side = juce::jmin (disc.getWidth(), disc.getHeight() + 6);
+            generator[2]->slider.setBounds (disc.withSizeKeepingCentre (side, disc.getHeight()));
+            speedCol.removeFromTop (2);
+            auto syncRow = speedCol.removeFromTop (22).reduced (6, 1);
+            syncTick.setBounds (syncRow.removeFromLeft (132));
+            syncRow.removeFromLeft (8);
+            pitchTick.setBounds (syncRow.removeFromLeft (156));
+        }
+        placeDrop (scatLabel, scatBox, tape.removeFromTop (dropH).removeFromLeft (220));
+        tape = knobRow;
+        if (generator.size() > 8 && generator[8] != nullptr)
+            placeProminent (*generator[8], tape.removeFromLeft (juce::jmin (108, tape.getWidth() / 4)), 15.f);
+        if (! wobble.empty() && wobble[0] != nullptr)
+            placeProminent (*wobble[0], tape.removeFromLeft (juce::jmin (108, tape.getWidth() / 3)), 15.f);
+        placeCells ({ generator.size() > 7 ? generator[7].get() : nullptr,
+                      generator.size() > 9 ? generator[9].get() : nullptr,
+                      generator.size() > 13 ? generator[13].get() : nullptr },
+                    tape);
+
+        filtFrame = filt.removeFromTop (filtH);
+    {
+        auto box = filtFrame.reduced (4, 2);
+        auto envCol = box.removeFromRight (230);
+        filtEnvTag = envCol.removeFromTop (22);
+        layFlat (fenv, envCol, &fAttackSync, &fDecaySync, &fReleaseSync, &filtHoldPlate);
+        filtTag = box.removeFromTop (22);
+        auto modes = box.removeFromTop (dropH);
+        placeDrop (filtTypeLabel, filtTypeBox, modes.removeFromLeft (140));
+        modes.removeFromLeft (4);
+        placeDrop (filtWhereLabel, filtWhereBox, modes.removeFromLeft (140));
+        placeTight (filter, 0, 2, 110, box);
+    }
+    {
+        auto row = filt.removeFromTop (pairH);
+        const int half = juce::jmax (0, (row.getWidth() - 8) / 2);
+        formFrame = row.removeFromLeft (half);
+        row.removeFromLeft (8);
+        ringFrame = row;
+        {
+            auto box = formFrame.reduced (4, 2);
+            formantTag = box.removeFromTop (22);
+            placeTight (filter, 2, 3, 100, box);
+        }
+        {
+            auto box = ringFrame.reduced (4, 2);
+            ringTag = box.removeFromTop (22);
+            placeTight (filter, 5, 3, 100, box);
+        }
+    }
+    crushFrame = filt.removeFromTop (crushH);
+    {
+        auto box = crushFrame.reduced (6, 2);
+        crushTag = box.removeFromTop (22);
+        placeTight (generator, 3, 4, 110, box);
+    }
+    {
+        auto row = filt.removeFromTop (delayH);
+        const int half = juce::jmax (0, (row.getWidth() - 8) / 2);
+        delayFrame = row.removeFromLeft (half);
+        row.removeFromLeft (8);
+        revFrame = row;
+        {
+            auto box = delayFrame.reduced (4, 2);
+            delayTag = box.removeFromTop (22);
+            placeTight (output, 0, 3, 88, box);
+        }
+        {
+            auto box = revFrame.reduced (4, 2);
+            revTag = box.removeFromTop (22);
+            placeTight (reverb, 0, 3, 88, box);
+        }
+    }
+    compFrame = filt.removeFromTop (compH);
+    {
+        auto box = compFrame.reduced (6, 2);
+        compTag = box.removeFromTop (22);
+        auto meterCol = box.removeFromRight (44);
+        meterCol.removeFromLeft (8);
+        outMeter.setBounds (meterCol);
+        meterBounds = meterCol.withTrimmedTop (16).reduced (8, 2);
+        placeTight (comp, 0, 5, 86, box);
+    }
+        auto pinSlot = [] (juce::ComboBox& box, juce::Rectangle<int> tag)
+        {
+            box.setBounds (tag.removeFromRight (52).reduced (0, 1));
+        };
+        pinSlot (slotBox[0], playTag);
+        pinSlot (slotBox[2], filtTag);
+        pinSlot (slotBox[1], crushTag);
+        pinSlot (slotBox[3], delayTag);
+        pinSlot (slotBox[4], revTag);
+        pinSlot (slotBox[5], compTag);
+    }
+
+    {
+        const int outTop = juce::jmax (16, outPanel.getHeight() * 11 / 100);
+        const int outBot = juce::jmax (10, outPanel.getHeight() * 16 / 100);
+        auto out = outPanel.withTrimmedTop (outTop + 32).withTrimmedBottom (outBot)
+                           .reduced (40, 0);
+        auto sources = out.removeFromLeft (out.getWidth() / 2).reduced (2, 0);
+        auto effects = out.reduced (2, 0);
+        const int sourceH = std::max (16, sources.getHeight() / 3);
+        const int effectH = std::max (16, effects.getHeight() / 4);
+        auto layLine = [] (Knob* fader, juce::Rectangle<int> line)
+        {
+            if (fader == nullptr)
+                return;
+            fader->slider.setSliderStyle (juce::Slider::LinearHorizontal);
+            fader->slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 40, 14);
+            fader->label.setJustificationType (juce::Justification::centredLeft);
+            fader->label.setBounds (line.removeFromLeft (48));
+            fader->hint.setBounds ({});
+            fader->slider.setBounds (line.reduced (2, 1));
+        };
+        Knob* sourceRows[3] = {
+            mix.size() > 0 ? mix[0].get() : nullptr,
+            mix.size() > 1 ? mix[1].get() : nullptr,
+            output.size() > 3 ? output[3].get() : nullptr
+        };
+        if (output.size() > 3 && output[3] != nullptr)
+            output[3]->label.setText ("out", juce::dontSendNotification);
+        for (auto* fader : sourceRows)
+            layLine (fader, sources.removeFromTop (sourceH));
+        for (int i = 2; i < 6 && i < (int) mix.size(); ++i)
+            layLine (mix[(size_t) i].get(), effects.removeFromTop (effectH));
+    }
+
+    auto pinMode = [] (Knob& knob, juce::ToggleButton& tick)
+    {
+        auto cell = knob.slider.getBounds();
+        auto row = cell.removeFromBottom (18);
+        cell.removeFromBottom (4);
+        knob.slider.setBounds (cell);
+        const int w = juce::jmin (104, row.getWidth());
+        tick.setBounds (row.withSizeKeepingCentre (w, 16));
+    };
+    if (! output.empty() && output[0] != nullptr)
+        pinMode (*output[0], delaySync);
+
+    auto layLfo = [&] (juce::Rectangle<int> col, juce::Label& shapeLabel,
+                       juce::ComboBox& shape, juce::Label& destLabel, juce::ComboBox& dest,
+                       Knob* rate, Knob* depth, juce::ToggleButton& tick, bool shown)
+    {
+        auto showPart = [shown] (juce::Component& c) { c.setVisible (shown); };
+        showPart (shapeLabel);
+        showPart (shape);
+        showPart (destLabel);
+        showPart (dest);
+        showPart (tick);
+        auto showKnob = [&] (Knob* knob)
+        {
+            if (knob == nullptr)
+                return;
+            knob->slider.setVisible (shown);
+            knob->label.setVisible (shown);
+        };
+        showKnob (rate);
+        showKnob (depth);
+        placeDrop (shapeLabel, shape, col.removeFromTop (dropH));
+        const int knobH = juce::jmax (96, col.getHeight() - dropH - 6);
+        auto knobs = col.removeFromTop (knobH);
+        auto placeOne = [] (Knob* knob, juce::Rectangle<int> cell)
+        {
+            if (knob == nullptr)
+                return;
+            knob->label.setBounds (cell.removeFromTop (16));
+            knob->hint.setBounds ({});
+            knob->slider.setBounds (cell);
+        };
+        placeOne (rate, knobs.removeFromLeft (knobs.getWidth() * 3 / 5).reduced (2, 0));
+        placeOne (depth, knobs.reduced (2, 0));
+        if (rate != nullptr)
+            pinMode (*rate, tick);
+        placeDrop (destLabel, dest, col.removeFromTop (dropH));
+    };
+    auto box = lfoPanel.reduced (6, 4);
+    lfoTag = box.removeFromTop (22);
+    for (int i = 0; i < 4; ++i)
+        lfoTab[i].setVisible (false);
+    if (lfo.size() >= 8)
+    {
+        const int half = juce::jmax (0, (box.getWidth() - 8) / 2);
+        auto lfoLeft = box.removeFromLeft (half);
+        box.removeFromLeft (8);
+        lfoTitle[0].setVisible (true);
+        lfoTitle[1].setVisible (true);
+        lfoTitle[2].setVisible (false);
+        lfoTitle[3].setVisible (false);
+        lfoTitle[0].setBounds (lfoLeft.removeFromTop (18));
+        lfoTitle[1].setBounds (box.removeFromTop (18));
+        layLfo (lfoLeft, lfoShapeLabel[0], lfoShapeBox[0], lfoDestLabel[0], lfoDestBox[0],
+                lfo[0].get(), lfo[1].get(), lfoSync[0], true);
+        layLfo (box, lfoShapeLabel[1], lfoShapeBox[1], lfoDestLabel[1], lfoDestBox[1],
+                lfo[2].get(), lfo[3].get(), lfoSync[1], true);
+        for (int i = 2; i < 4; ++i)
+            layLfo ({}, lfoShapeLabel[i], lfoShapeBox[i], lfoDestLabel[i], lfoDestBox[i],
+                    lfo[(size_t) (i * 2)].get(), lfo[(size_t) (i * 2 + 1)].get(), lfoSync[i], false);
+    }
+}
+
+void ClicksEditor::refreshSource()
+{
+}
+
+void ClicksEditor::routeSlot (int index)
+{
+    if (slotGuard || index < 0 || index >= 6)
+        return;
+    const int chosen = slotBox[index].getSelectedItemIndex();
+    if (chosen < 0)
+        return;
+    int missing = -1;
+    bool seen[6] = {};
+    for (int i = 0; i < 6; ++i)
+    {
+        const int s = slotBox[i].getSelectedItemIndex();
+        if (s >= 0 && s < 6)
+            seen[s] = true;
+    }
+    for (int s = 0; s < 6; ++s)
+        if (! seen[s])
+            missing = s;
+    if (missing < 0)
+        return;
+    slotGuard = true;
+    for (int i = 0; i < 6; ++i)
+    {
+        if (i == index)
+            continue;
+        if (slotBox[i].getSelectedItemIndex() == chosen)
+            slotBox[i].setSelectedItemIndex (missing, juce::sendNotificationSync);
+    }
+    slotGuard = false;
+}
+
+void ClicksEditor::refreshFilter()
+{
+    const int type = (int) clicks.apvts.getRawParameterValue ("filttype")->load();
+    const bool on = type > 0;
+    const bool form = type == 5;
+    const bool ring = type == 6;
+    auto fadeKnob = [] (Knob& knob, bool live)
+    {
+        const float fade = live ? 1.f : 0.38f;
+        knob.slider.setEnabled (live);
+        knob.label.setEnabled (live);
+        knob.hint.setEnabled (live);
+        knob.slider.setAlpha (fade);
+        knob.label.setAlpha (fade);
+        knob.hint.setAlpha (fade);
+    };
+    const int order = (int) clicks.apvts.getRawParameterValue ("fxorder")->load();
+    auto slotAt = [this] (const char* id)
+    {
+        return (int) clicks.apvts.getRawParameterValue (id)->load();
+    };
+    const bool stock = slotAt ("tapeslot") == 0 && slotAt ("crushslot") == 1 && slotAt ("filtslot") == 2
+        && slotAt ("delayslot") == 3 && slotAt ("revslot") == 4 && slotAt ("compslot") == 5;
+    const bool placeLive = on && order == 0 && stock;
+    filtWhereLabel.setEnabled (placeLive);
+    filtWhereLabel.setAlpha (placeLive ? 1.f : 0.38f);
+    filtWhereBox.setEnabled (placeLive);
+    filtWhereBox.setAlpha (placeLive ? 1.f : 0.38f);
+    if (filter.size() > 1 && filter[0] != nullptr)
+    {
+        fadeKnob (*filter[0], on);
+        filter[0]->hint.setText (form ? "vowel" : ring ? "ring" : "hertz", juce::dontSendNotification);
+    }
+    if (filter.size() > 1 && filter[1] != nullptr)
+        fadeKnob (*filter[1], on);
+    for (int i : { 2, 3, 4 })
+        if (i < (int) filter.size() && filter[(size_t) i] != nullptr)
+            fadeKnob (*filter[(size_t) i], form);
+    for (int i : { 5, 6, 7 })
+        if (i < (int) filter.size() && filter[(size_t) i] != nullptr)
+            fadeKnob (*filter[(size_t) i], ring);
+    repaint (formantTag);
+    repaint (ringTag);
+}
+
+void ClicksEditor::refreshCrush()
+{
+}
+
+ClicksEditor::Knob* ClicksEditor::knobForDest (int dest)
+{
+    auto at = [] (std::vector<std::unique_ptr<Knob>>& group, int index) -> Knob*
+    {
+        if (index < 0 || index >= (int) group.size())
+            return nullptr;
+        return group[(size_t) index].get();
+    };
+    switch (dest)
+    {
+        case 1: return at (filter, 0);
+        case 2: return at (filter, 1);
+        case 3: return at (output, 0);
+        case 4: return at (output, 2);
+        case 5: return at (generator, 6);
+        case 6: return at (generator, 5);
+        case 7: return at (generator, 2);
+        case 8: return at (output, 3);
+        case 9: return at (generator, 3);
+        case 10: return at (generator, 4);
+        case 11: return at (output, 1);
+        case 12: return at (generator, 8);
+        case 13: return at (generator, 0);
+        case 14: return at (generator, 1);
+        case 15: return at (filter, 2);
+        case 16: return at (filter, 3);
+        case 17: return at (filter, 4);
+        case 18: return at (filter, 5);
+        case 19: return at (filter, 6);
+        case 20: return at (filter, 7);
+        case 21: return at (env, 0);
+        case 22: return at (env, 1);
+        case 23: return at (env, 2);
+        case 24: return at (env, 3);
+        case 25: return at (fenv, 4);
+        case 26: return at (sam, 0);
+        case 27: return at (sam, 1);
+        case 28: return at (generator, 7);
+        case 29: return at (fenv, 0);
+        case 30: return at (fenv, 1);
+        case 31: return at (fenv, 2);
+        case 32: return at (fenv, 3);
+        case 33: return at (generator, 9);
+        case 34: return at (generator, 10);
+        case 35: return at (sam, 4);
+        default: return nullptr;
+    }
+}
+
+void ClicksEditor::refreshLfo()
+{
+    int aimed[4] = { 0, 0, 0, 0 };
+    for (int i = 0; i < 4; ++i)
+    {
+        const juce::String id = "lfo" + juce::String (i + 1) + "dest";
+        aimed[i] = (int) clicks.apvts.getRawParameterValue (id)->load();
+    }
+
+    Knob* marked[48] {};
+    int nMarked = 0;
+    auto remember = [&] (Knob* knob)
+    {
+        if (knob == nullptr)
+            return;
+        for (int i = 0; i < nMarked; ++i)
+            if (marked[i] == knob)
+                return;
+        if (nMarked < 48)
+            marked[nMarked++] = knob;
+    };
+    for (int dest = 1; dest < kDestN; ++dest)
+        remember (knobForDest (dest));
+
+    for (int i = 0; i < nMarked; ++i)
+    {
+        auto* knob = marked[i];
+        int tag = 0;
+        for (int n = 0; n < 4; ++n)
+            if (knobForDest (aimed[n]) == knob)
+                tag |= 1 << n;
+        const int previous = (int) knob->slider.getProperties().getWithDefault ("lfo", 0);
+        knob->slider.getProperties().set ("lfo", tag);
+        juce::Colour ink = kPencil;
+        for (int n = 0; n < 4; ++n)
+            if ((tag & (1 << n)) != 0)
+                ink = kLfoCol[n];
+        knob->label.setColour (juce::Label::textColourId, ink);
+        knob->slider.setColour (juce::Slider::textBoxTextColourId, ink);
+        if (previous != tag)
+            knob->slider.repaint();
+    }
+}
+
+void ClicksEditor::snapDivision (Knob& knob, const char* id, const char* syncId,
+                                 TempoHold& hold, const juce::String& freeHint)
+{
+    auto* param = clicks.apvts.getParameter (id);
+    if (param == nullptr)
+        return;
+    const bool synced = clicks.apvts.getRawParameterValue (syncId)->load() > 0.5f;
+    const float raw = clicks.apvts.getRawParameterValue (id)->load();
+    if (synced)
+    {
+        if (! hold.on)
+        {
+            hold.saved = raw;
+            hold.on = true;
+            knob.slider.textFromValueFunction = [param] (double value)
+            {
+                const int index = ClickParams::divisionIndexNorm (param->convertTo0to1 ((float) value));
+                return juce::String (ClickParams::divisionName (index));
+            };
+            knob.slider.valueFromTextFunction = [param] (const juce::String& text)
+            {
+                for (int i = 0; i < ClickParams::divisionCount(); ++i)
+                    if (text.equalsIgnoreCase (ClickParams::divisionName (i)))
+                        return (double) param->convertFrom0to1 ((float) i / (float) (ClickParams::divisionCount() - 1));
+                return text.getDoubleValue();
+            };
+        }
+        const int index = ClickParams::divisionIndexNorm (param->getValue());
+        const float anchor = param->convertFrom0to1 ((float) index / (float) (ClickParams::divisionCount() - 1));
+        knob.hint.setText (ClickParams::divisionName (index), juce::dontSendNotification);
+        if (std::abs (raw - anchor) > std::max (0.0008f, std::abs (anchor) * 0.002f))
+            param->setValueNotifyingHost (param->convertTo0to1 (anchor));
+        knob.slider.updateText();
+    }
+    else if (hold.on)
+    {
+        hold.on = false;
+        knob.slider.textFromValueFunction = nullptr;
+        knob.slider.valueFromTextFunction = nullptr;
+        param->setValueNotifyingHost (param->convertTo0to1 (hold.saved));
+        knob.slider.updateText();
+        knob.hint.setText (freeHint, juce::dontSendNotification);
+    }
+}
+
+void ClicksEditor::refreshScatter()
+{
+    const bool repeat = clicks.apvts.getRawParameterValue ("scatmode")->load() > 0.5f;
+    if (generator.size() > 9 && generator[9] != nullptr)
+    {
+        auto& knob = *generator[9];
+        const float fade = repeat ? 1.f : 0.38f;
+        knob.slider.setEnabled (repeat);
+        knob.label.setEnabled (repeat);
+        knob.hint.setEnabled (repeat);
+        knob.slider.setAlpha (fade);
+        knob.label.setAlpha (fade);
+        knob.hint.setAlpha (fade);
+    }
+}
+
+void ClicksEditor::refreshSam()
+{
+    const int wave = (int) std::lround (clicks.apvts.getRawParameterValue ("wave")->load());
+    const bool samMode = wave == 6;
+    const bool speakOn = wave == 7;
+    const bool on = samMode || speakOn;
+    const float fade = on ? 1.f : 0.38f;
+    auto dim = [on, fade] (juce::Component& c)
+    {
+        c.setVisible (true);
+        c.setEnabled (on);
+        c.setAlpha (fade);
+    };
+    auto show = [] (juce::Component& c, bool visible, bool enabled)
+    {
+        c.setVisible (visible);
+        c.setEnabled (enabled && visible);
+        c.setAlpha (visible ? 1.f : 0.f);
+    };
+    dim (sayLabel);
+    dim (sayBox);
+    dim (lockButton);
+    for (auto& knob : this->sam)
+        if (knob != nullptr)
+        {
+            show (knob->slider, ! speakOn, samMode);
+            show (knob->label, ! speakOn, samMode);
+            show (knob->hint, false, false);
+        }
+    for (auto& knob : this->speak)
+        if (knob != nullptr)
+        {
+            show (knob->slider, speakOn, speakOn);
+            show (knob->label, speakOn, speakOn);
+            show (knob->hint, false, false);
+        }
+    repaint (samTag);
 }
 
 void ClicksEditor::timerCallback()
 {
-    repaint (240, 18, 220, 40);
+    juce::String learnedParam;
+    const int learnedCc = clicks.takeMidiLearnNotice (learnedParam);
+    if (learnedCc >= 0)
+    {
+        learnUntil = 0;
+        showNote ("MIDI CC " + juce::String (learnedCc + 1) + " controls "
+                  + clicks.paramNameForId (learnedParam) + ".");
+    }
+    if (learnUntil > 0 && clicks.isMidiLearning()
+        && juce::Time::getMillisecondCounter() > learnUntil)
+    {
+        clicks.cancelMidiLearn();
+        learnUntil = 0;
+        showNote ("MIDI learn timed out.");
+    }
+    if (status.isNotEmpty() && juce::Time::getMillisecondCounter() > statusUntil)
+    {
+        status.clear();
+        showPreset();
+        repaint();
+    }
+    refreshSam();
+    refreshFilter();
+    refreshSource();
+    refreshCrush();
+    refreshScatter();
+    if (generator.size() > 2 && generator[2] != nullptr)
+    {
+        auto& slow = generator[2]->slider;
+        const bool synced = clicks.apvts.getRawParameterValue ("slowsync")->load() > 0.5f;
+        const float raw = clicks.apvts.getRawParameterValue ("slow")->load();
+        if (synced)
+        {
+            if (! tempoOn)
+            {
+                freeSlow = raw;
+                tempoOn = true;
+                slow.textFromValueFunction = [] (double value)
+                {
+                    return juce::String (ClickParams::divisionName (ClickParams::divisionIndex ((float) value)));
+                };
+                slow.valueFromTextFunction = [] (const juce::String& text)
+                {
+                    for (int i = 0; i < ClickParams::divisionCount(); ++i)
+                        if (text.equalsIgnoreCase (ClickParams::divisionName (i)))
+                            return (double) ClickParams::divisionAnchor (i);
+                    return text.getDoubleValue();
+                };
+            }
+            const int index = ClickParams::divisionIndex (raw);
+            const float anchor = ClickParams::divisionAnchor (index);
+            generator[2]->hint.setText (ClickParams::divisionName (index), juce::dontSendNotification);
+            if (std::abs (raw - anchor) > 0.0008f)
+                if (auto* param = clicks.apvts.getParameter ("slow"))
+                    param->setValueNotifyingHost (param->convertTo0to1 (anchor));
+            slow.updateText();
+        }
+        else if (tempoOn)
+        {
+            tempoOn = false;
+            slow.textFromValueFunction = nullptr;
+            slow.valueFromTextFunction = nullptr;
+            if (auto* param = clicks.apvts.getParameter ("slow"))
+                param->setValueNotifyingHost (param->convertTo0to1 (freeSlow));
+            slow.updateText();
+            generator[2]->hint.setText ("rate", juce::dontSendNotification);
+        }
+    }
+    if (env.size() > 3 && env[0] != nullptr && env[1] != nullptr && env[3] != nullptr)
+    {
+        snapDivision (*env[0], "attack", "attacksync", attackHold, {});
+        snapDivision (*env[1], "decay", "decaysync", decayHold, {});
+        snapDivision (*env[3], "release", "releasesync", releaseHold, {});
+    if (senv.size() > 3 && senv[0] != nullptr && senv[1] != nullptr && senv[3] != nullptr)
+    {
+        snapDivision (*senv[0], "subattack", "subattacksync", subAttackHold, {});
+        snapDivision (*senv[1], "subdecay", "subdecaysync", subDecayHold, {});
+        snapDivision (*senv[3], "subrelease", "subreleasesync", subReleaseHold, {});
+    }
+    }
+    if (! output.empty() && output[0] != nullptr)
+        snapDivision (*output[0], "delay", "delaysync", delayHold, "echo time");
+    if (fenv.size() > 3 && fenv[0] != nullptr && fenv[1] != nullptr && fenv[3] != nullptr)
+    {
+        snapDivision (*fenv[0], "fattack", "fattacksync", fAttackHold, {});
+        snapDivision (*fenv[1], "fdecay", "fdecaysync", fDecayHold, {});
+        snapDivision (*fenv[3], "frelease", "freleasesync", fReleaseHold, {});
+    }
+    if (lfo.size() >= 4 && lfo[0] != nullptr && lfo[2] != nullptr)
+    {
+        for (int i = 0; i < 4; ++i)
+            if (lfo.size() > (size_t) (i * 2) && lfo[(size_t) (i * 2)] != nullptr)
+                snapDivision (*lfo[(size_t) (i * 2)],
+                              ("lfo" + juce::String (i + 1) + "rate").toRawUTF8(),
+                              ("lfo" + juce::String (i + 1) + "sync").toRawUTF8(),
+                              lfoHold[i], "hz");
+    }
+    refreshLfo();
+    if (clicks.takeSpeechRequest())
+        showNote (clicks.lockSpeech (true));
+    if (clicks.samNeedsRender())
+    {
+        const auto now = juce::Time::getMillisecondCounter();
+        if (lastSamLive == 0 || now - lastSamLive >= 140)
+        {
+            lastSamLive = now;
+            const auto speechStatus = clicks.lockSpeech (false);
+            if (speechStatus.startsWith ("That line") || speechStatus.startsWith ("Sam could"))
+                showNote (speechStatus);
+        }
+    }
+    const int rev = clicks.samRevision();
+    if (rev != samSeen)
+    {
+        samSeen = rev;
+        const auto word = clicks.samText();
+        if (sayBox.getText() != word)
+            sayBox.setText (word, juce::dontSendNotification);
+    }
+    refreshScope();
+    const float peak = clicks.meter.load();
+    if (peak >= meterShown)
+        meterShown = peak;
+    else
+        meterShown *= 0.86f;
+    if (peak >= meterHold)
+    {
+        meterHold = peak;
+        meterHoldAge = 0;
+    }
+    else if (++meterHoldAge > 18)
+        meterHold *= 0.9f;
+    repaint (scopePanel);
+    repaint (wavePlate);
+    repaint (subWavePlate);
+    repaint (botPanel);
+    repaint (outMeter.getBounds());
+    animateLfos();
+}
+
+void ClicksEditor::animateLfos()
+{
+    Knob* knobs[48] {};
+    float next[48] {};
+    int n = 0;
+    auto find = [&] (Knob* knob) -> int
+    {
+        if (knob == nullptr)
+            return -1;
+        for (int i = 0; i < n; ++i)
+            if (knobs[i] == knob)
+                return i;
+        if (n >= 48)
+            return -1;
+        knobs[n] = knob;
+        return n++;
+    };
+    for (int dest = 1; dest < kDestN; ++dest)
+        find (knobForDest (dest));
+    const bool speedFree = clicks.apvts.getRawParameterValue ("slowsync")->load() < 0.5f;
+    for (int i = 0; i < 4; ++i)
+    {
+        const int dest = (int) clicks.apvts.getRawParameterValue ("lfo" + juce::String (i + 1) + "dest")->load();
+        if (dest <= 0 || (dest == 7 && ! speedFree))
+            continue;
+        const int slot = find (knobForDest (dest));
+        if (slot >= 0)
+            next[slot] += clicks.lfoAmount (i);
+    }
+    for (int i = 0; i < n; ++i)
+    {
+        auto& props = knobs[i]->slider.getProperties();
+        const float prev = (float) props.getWithDefault ("lfoDrive", 0.0);
+        if (std::abs (prev - next[i]) < 0.004f)
+            continue;
+        props.set ("lfoDrive", next[i]);
+        knobs[i]->slider.repaint();
+    }
+}
+
+juce::File ClicksEditor::presetFolder() const
+{
+    auto dir = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                   .getChildFile ("Library/Audio/Presets/Logic Beach/NULL GLITCH");
+    dir.createDirectory();
+    return dir;
+}
+
+void ClicksEditor::initPreset()
+{
+    for (auto* param : clicks.getParameters())
+        if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (param))
+            ranged->setValueNotifyingHost (ranged->getDefaultValue());
+    clicks.setSamText ("hello");
+    sayBox.setText ("hello", juce::dontSendNotification);
+    presetName.clear();
+    clicks.apvts.state.setProperty ("preset", "", nullptr);
+    showNote (clicks.lockSpeech());
+}
+
+void ClicksEditor::savePreset()
+{
+    chooser = std::make_unique<juce::FileChooser> (
+        "Save preset",
+        presetFolder().getChildFile ("preset.nullglitch"),
+        "*.nullglitch",
+        true, false, this);
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode
+                               | juce::FileBrowserComponent::canSelectFiles
+                               | juce::FileBrowserComponent::warnAboutOverwriting,
+                          [this] (const juce::FileChooser& dialog)
+                          {
+                              auto file = dialog.getResult();
+                              if (file == juce::File())
+                                  return;
+                              if (! file.hasFileExtension ("nullglitch"))
+                                  file = file.withFileExtension ("nullglitch");
+                              presetName = file.getFileNameWithoutExtension();
+                              clicks.apvts.state.setProperty ("preset", presetName, nullptr);
+                              if (auto xml = clicks.apvts.copyState().createXml())
+                              {
+                                  if (xml->writeTo (file))
+                                      showNote ("Saved " + file.getFileName());
+                                  else
+                                      showPreset();
+                              }
+                          });
+}
+
+void ClicksEditor::loadPreset()
+{
+    chooser = std::make_unique<juce::FileChooser> (
+        "Load preset",
+        presetFolder(),
+        "*.nullglitch",
+        true, false, this);
+    chooser->launchAsync (juce::FileBrowserComponent::openMode
+                               | juce::FileBrowserComponent::canSelectFiles,
+                          [this] (const juce::FileChooser& dialog)
+                          {
+                              const auto file = dialog.getResult();
+                              if (file == juce::File())
+                                  return;
+                              const auto xml = juce::XmlDocument::parse (file);
+                              if (xml == nullptr || ! xml->hasTagName (clicks.apvts.state.getType()))
+                              {
+                                  showNote ("That file is not a NULL GLITCH preset.");
+                                  return;
+                              }
+                              clicks.replacePluginState (*xml);
+                              presetName = clicks.apvts.state.getProperty ("preset").toString();
+                              if (presetName.isEmpty())
+                                  presetName = file.getFileNameWithoutExtension();
+                              clicks.apvts.state.setProperty ("preset", presetName, nullptr);
+                              showNote ("Loaded " + file.getFileName() + ". " + clicks.lockSpeech());
+                          });
+}
+
+void ClicksEditor::refreshScope()
+{
+    auto fill = [this] (std::vector<float>& trace, int width, double& period, int n, const float* raw)
+    {
+        trace.assign ((size_t) std::max (2, width), 0.f);
+        if (n < 64)
+        {
+            period = 0;
+            return;
+        }
+        const auto locked = lockBassScope (raw, n, clicks.engineSampleRate(),
+                                           (double) clicks.bassHz(), period);
+        period = locked.period;
+        if (locked.length < 2)
+            return;
+        const float* w = raw + locked.start;
+        float peak = 0.f;
+        for (int i = 0; i < locked.length; ++i)
+            peak = std::max (peak, std::abs (w[i]));
+        const float scale = peak < 0.008f ? 0.f : std::min (1.f / peak, 6.f);
+        const int plot = std::max (2, width);
+        for (int i = 0; i < plot; ++i)
+        {
+            const double pos = (double) i / (double) (plot - 1) * (double) (locked.length - 1);
+            const int a = (int) pos;
+            const int b = std::min (a + 1, locked.length - 1);
+            const float f = (float) (pos - a);
+            trace[(size_t) i] = (w[a] * (1.f - f) + w[b] * f) * scale;
+        }
+    };
+
+    float raw[8192];
+    if (! scopePanel.isEmpty())
+    {
+        const int n = clicks.copyScope (raw, 8192);
+        fill (scopeTrace, std::max (2, scopePanel.getWidth() - 4), scopePeriod, n, raw);
+    }
+    if (! botPanel.isEmpty())
+    {
+        const int plot = std::max (2, botPanel.getWidth() - 4);
+        if ((int) std::lround (clicks.apvts.getRawParameterValue ("wave")->load()) < 6)
+        {
+            samTrace.assign ((size_t) plot, 0.f);
+            samPeriod = 0;
+        }
+        else
+        {
+            const int n = clicks.copySamScope (raw, 8192);
+            fill (samTrace, plot, samPeriod, n, raw);
+        }
+    }
+}
+
+void ClicksEditor::showPreset()
+{
+    presetBox.setText (status.isNotEmpty() ? status : presetName, juce::dontSendNotification);
+}
+
+void ClicksEditor::showNote (const juce::String& text)
+{
+    status = text;
+    statusUntil = juce::Time::getMillisecondCounter() + 2800;
+    showPreset();
+    repaint();
 }
