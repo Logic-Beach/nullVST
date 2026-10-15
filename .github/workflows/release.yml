@@ -60,12 +60,13 @@ jobs:
           NAME="NullAtomo-${GITHUB_REF_NAME}-${{ matrix.file }}.zip"
           OUT="$PWD/dist/$NAME"
           PARENT=$(dirname "$ART")
-          # macOS and Linux have zip. Git for Windows has GNU tar, which
-          # cannot write a zip, and no zip program. Windows itself ships bsdtar.
+          # macOS and Linux have zip. Git bash puts its own GNU tar.exe first
+          # on PATH, and that tar cannot write a zip. Windows bsdtar can.
           if command -v zip >/dev/null 2>&1; then
             (cd "$PARENT" && zip -r -y "$OUT" "NullAtomo.vst3")
           else
-            tar.exe -a -c -f "$(cygpath -w "$OUT")" -C "$(cygpath -w "$PARENT")" "NullAtomo.vst3"
+            MSYS2_ARG_CONV_EXCL='*' /c/Windows/System32/tar.exe -a -c \
+              -f "$(cygpath -w "$OUT")" -C "$(cygpath -w "$PARENT")" "NullAtomo.vst3"
           fi
           ls -lh "$OUT"
 
