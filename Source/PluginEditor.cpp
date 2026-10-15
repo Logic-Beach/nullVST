@@ -129,32 +129,6 @@ ClicksEditor::Look::Look()
     panelMain = pict (BinaryData::backgroundmain_png, BinaryData::backgroundmain_pngSize);
     panelOut = pict (BinaryData::backgroundoutput_png, BinaryData::backgroundoutput_pngSize);
 
-    // The scans keep a clear margin. Composite that onto the paper and force every pixel solid.
-    auto flatten = [] (juce::Image& image)
-    {
-        if (! image.isValid())
-            return;
-        const float pr = kPaper.getFloatRed();
-        const float pg = kPaper.getFloatGreen();
-        const float pb = kPaper.getFloatBlue();
-        juce::Image::BitmapData pix (image, juce::Image::BitmapData::readWrite);
-        for (int y = 0; y < image.getHeight(); ++y)
-        {
-            for (int x = 0; x < image.getWidth(); ++x)
-            {
-                const auto c = pix.getPixelColour (x, y);
-                const float a = c.getFloatAlpha();
-                if (a >= 0.999f)
-                    continue;
-                const float r = c.getFloatRed() * a + pr * (1.f - a);
-                const float g = c.getFloatGreen() * a + pg * (1.f - a);
-                const float b = c.getFloatBlue() * a + pb * (1.f - a);
-                pix.setPixelColour (x, y, juce::Colour::fromFloatRGBA (r, g, b, 1.f));
-            }
-        }
-    };
-    flatten (panelMain);
-    flatten (panelOut);
 }
 
 juce::Font ClicksEditor::Look::faceFont (float height) const
@@ -543,7 +517,7 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     polyAttachment = addDrop (polyBox, polyLabel, "poly", "voices",
                               "Voices: Mono keeps the newest key. Poly lets notes overlap.");
     scatAttachment = addDrop (scatBox, scatLabel, "scatmode", "drift",
-                              "Drift: Warble is tape-style pitch drift on every source, including Sam and eSpeak. Low scatter wobbles a little. Full scatter can jump whole semitones. Repeat plays a fixed run of steps. The rate knob sets how fast either one moves, apart from tape speed.");
+                              "Drift: Warble sways the whole mix passing through the tape, sub and echoes included. Wow at the rate knob, a lighter flutter on top. Repeat walks each source through a fixed run of steps. The rate knob sets how fast either one moves, apart from tape speed.");
     subAttachment = addDrop (subBox, subLabel, "submode", "mode",
                              "Sub: Add and subtract mix it in. Multiply is ring modulation. Divide is the tone over the sub. AM is loudness. FM bends the pitch. Min and max pick the lower or higher sample.");
     subWaveAttachment = addDrop (subWaveBox, subWaveLabel, "subwave", "shape",
@@ -553,12 +527,12 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     filtWhereAttachment = addDrop (filtWhereBox, filtWhereLabel, "filtwhere", "place",
                                    "Place: on the first effect order, Tone filters the note so the echo shares it. Out filters the mix, and the repeats pass through it again.");
     fxOrderAttachment = addDrop (fxOrderBox, fxOrderLabel, "fxorder", "order",
-                                 "Order: crush, filter, delay, tape colour, and the compressor. The first row is the original path, and Place still moves the filter there. The other rows put those effects in the order they are named.");
+                                 "Order: crush, filter, delay, tape, and the compressor. The first row is the original path, and Place still moves the filter there. The other rows put those effects in the order they are named.");
     fxOrderBox.setVisible (false);
     fxOrderLabel.setVisible (false);
     const char* slotIds[6] = { "tapeslot", "crushslot", "filtslot", "delayslot", "revslot", "compslot" };
     const char* slotTips[6] = {
-        "Tape place in the chain. 1 runs first. Picking a number another effect already has swaps the two.",
+        "Tape place in the chain. 1 runs first. Everything before it in the chain gets the warble and the deck colour. Picking a number another effect already has swaps the two.",
         "Crush place in the chain. 1 runs first. Picking a number another effect already has swaps the two.",
         "Filter place in the chain. 1 runs first. Picking a number another effect already has swaps the two.",
         "Delay place in the chain. 1 runs first. Picking a number another effect already has swaps the two.",
@@ -602,7 +576,7 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
                        Spec { "submix", "mix", "sub amount",
                               "Mix: how hard the sub joins. Zero leaves every mode dry." },
                        Spec { "slow", "speed", "rate",
-                              "Speed: the tape rate for the whole instrument. Tape drops the pitch as it slows and roughens the sound, without getting louder. Fix keeps the pitch and only changes the time. One plays the note as held. Tempo on, this is the beat division. Speech fills that division. Drift speed is the rate knob beside amount." },
+                              "Speed: the tape rate for every source, main, sub, and speech. Tape drops the pitch as it slows and roughens the whole mix, without getting louder. Fix keeps the speech pitch and only changes the time. One plays the note as held. Tempo on, this is the beat division. Speech fills that division. Warble speed is the rate knob beside amount." },
                        Spec { "bits", "bits", "crush steps",
                               "Bits: volume steps. 16 is clean. 8 hisses. 2 is a few coarse levels. Set wave to Sine, glitch to 0, and hold to 1." },
                        Spec { "hold", "hold", "crush freeze",
@@ -614,7 +588,7 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
                        Spec { "seed", "seed", "which pattern",
                               "Seed: which scatter pattern, on every wave. The same key and seed repeat. Warble keeps drifting. Repeat plays one fixed run of that seed." },
                        Spec { "scatter", "amount", "warble",
-                              "Amount: how far the tape warble moves on every source, including Sam and eSpeak. Low is a subtle wobble. Full can jump whole semitones. Repeat mode still uses this as its pitch spread." },
+                              "Amount: how far the tape sways everything passing through it, sub, echoes, Sam and eSpeak included. A quarter is a gentle wobble, half is about a semitone, full is a drunk deck. Repeat mode uses this as its pitch spread." },
                        Spec { "steps", "steps", "in the loop",
                               "Steps: how many pitches Repeat plays, then loops. The rate knob sets how long that run takes. Tape speed does not." },
                        Spec { "width", "width", "pulse",
@@ -624,12 +598,12 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
                        Spec { "subwidth", "width", "pulse",
                               "Width: where the sub wave flips. Half is the plain shape." },
                        Spec { "scatglide", "glide", "warble slide",
-                              "Glide: how long the warble takes to slide from one pitch to the next. Zero snaps instantly. It sits with the tape drift." },
+                              "Glide: in Warble, adds a slow random wander on top of the wow, and sets how long each wander takes to reach its next pitch. Zero is pure wow and flutter. In Repeat, how long each step takes to slide to the next pitch." },
                        Spec { "srcglide", "slide", "source glide",
                               "Slide: how long the main source glides between keys. Zero jumps on the new note. The sub ignores this." } })
         generator.push_back (addKnob (spec.id, spec.name, spec.hint, spec.tip));
     wobble.push_back (addKnob ("wobrate", "rate", "warble",
-                               "Warble rate: how fast Warble picks a new pitch, and how fast Repeat walks its steps. Tape speed does not move this. Higher is a faster flutter."));
+                               "Warble rate: the wow speed in Hz, with a lighter flutter riding about five times faster. Under 2 Hz is a slow sway, 4 to 8 is a wobbly deck, 30 is a shiver. Repeat walks its steps at this rate. Tape speed does not move this."));
 
     for (auto spec : {                        Spec { "samspeed", "speed", "sam talk",
                               "Speed: how fast Sam talks. It stays the same on every key, and a held note follows the knob. 72 is the 1982 voice. Higher is slower." },
@@ -822,11 +796,38 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     initButton.setButtonText ("init");
     saveButton.setButtonText ("save");
     loadButton.setButtonText ("load");
+    prevButton.setButtonText ("<");
+    nextButton.setButtonText (">");
     styleButton (initButton, "Init: sine, poly, sub sine at full mix, source envelopes on 1/8, sub attack on 1 bar, output and effect places as the opening patch.");
     styleButton (saveButton, "Save: write the knobs and the Sam word to a preset.");
     styleButton (loadButton, "Load: read a preset back in.");
+    styleButton (prevButton, "Previous shipped preset. Click the name for the list.");
+    styleButton (nextButton, "Next shipped preset. Click the name for the list.");
+    prevButton.onClick = [this] { stepPreset (-1); };
+    nextButton.onClick = [this] { stepPreset (1); };
     styleButton (lockButton, "Lock: render the word now. Return in the phrase box does the same. Speed, pitch, mouth, and throat also follow a note you are already holding. A line that does not fit is refused.");
     lockButton.setButtonText ("lock");
+    styleButton (darkButton, "Dark: invert every colour on the panel. The choice is kept between sessions.");
+    darkButton.onClick = [this]
+    {
+        dark = ! dark;
+        if (prefs != nullptr)
+        {
+            prefs->setValue ("dark", dark);
+            prefs->saveIfNeeded();
+        }
+        applyTheme();
+    };
+    {
+        juce::PropertiesFile::Options opt;
+        opt.applicationName = "NULL GLITCH";
+        opt.filenameSuffix = "settings";
+        opt.folderName = "Logic Beach";
+        opt.osxLibrarySubFolder = "Application Support";
+        opt.storageFormat = juce::PropertiesFile::storeAsXML;
+        prefs = std::make_unique<juce::PropertiesFile> (opt);
+        dark = prefs->getBoolValue ("dark", false);
+    }
     initButton.onClick = [this] { initPreset(); };
     saveButton.onClick = [this] { savePreset(); };
     loadButton.onClick = [this] { loadPreset(); };
@@ -838,7 +839,9 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     presetBox.setBorderSize (juce::BorderSize<int> (0, 6, 0, 4));
     presetBox.setMinimumHorizontalScale (0.6f);
     presetBox.setLookAndFeel (&look);
-    presetBox.setInterceptsMouseClicks (false, false);
+    presetBox.setTooltip ("Preset: click for the shipped list. The arrows step through it.");
+    presetBox.setInterceptsMouseClicks (true, false);
+    presetBox.addMouseListener (this, false);
     addAndMakeVisible (presetBox);
     showPreset();
     lockButton.onClick = [this] { showNote (clicks.lockSpeech()); };
@@ -922,7 +925,7 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     armPair (syncTick);
     pitchTick.setLookAndFeel (&look);
     pitchTick.setClickingTogglesState (true);
-    pitchTick.setTooltip ("Tape lets Speed drop the pitch and roughen the sound, the way a deck slows down. Fix keeps the pitch and only changes the time. Drift still moves every source, including Sam and eSpeak.");
+    pitchTick.setTooltip ("Tape lets Speed drop the pitch and roughen the whole mix, the way a deck slows down. Fix keeps the speech pitch and only changes the time. Warble sways the mix either way.");
     pitchTick.addMouseListener (this, true);
     addAndMakeVisible (pitchTick);
     pitchAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
@@ -955,18 +958,24 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     refreshCrush();
     refreshLfo();
     refreshScatter();
-    setSize (1216, 1066);
+    setSize (1216, 1082);
+    applyTheme();
     startTimerHz (30);
 }
 
 ClicksEditor::~ClicksEditor()
 {
     stopTimer();
+    for (auto* child : getChildren())
+        child->setComponentEffect (nullptr);
     tips.setLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
+    darkButton.setLookAndFeel (nullptr);
     initButton.setLookAndFeel (nullptr);
     saveButton.setLookAndFeel (nullptr);
     loadButton.setLookAndFeel (nullptr);
+    prevButton.setLookAndFeel (nullptr);
+    nextButton.setLookAndFeel (nullptr);
     presetBox.setLookAndFeel (nullptr);
     lockButton.setLookAndFeel (nullptr);
     syncTick.setLookAndFeel (nullptr);
@@ -1059,7 +1068,44 @@ void ClicksEditor::tryMidiLearnFrom (juce::Component* target, const juce::MouseE
 
 void ClicksEditor::mouseDown (const juce::MouseEvent& event)
 {
+    if (event.eventComponent == &presetBox)
+    {
+        showPresetMenu();
+        return;
+    }
     tryMidiLearnFrom (event.eventComponent, event);
+}
+
+void ClicksEditor::choosePreset (int index)
+{
+    const int count = clicks.getNumPrograms();
+    if (count <= 0)
+        return;
+    index = ((index % count) + count) % count;
+    clicks.applyFactoryPreset (index);
+    presetName = clicks.apvts.state.getProperty ("preset").toString();
+    sayBox.setText (clicks.samText(), juce::dontSendNotification);
+    showNote (clicks.lockSpeech());
+}
+
+void ClicksEditor::stepPreset (int delta)
+{
+    choosePreset (clicks.getCurrentProgram() + delta);
+}
+
+void ClicksEditor::showPresetMenu()
+{
+    juce::PopupMenu menu;
+    menu.setLookAndFeel (&look);
+    const int current = clicks.getCurrentProgram();
+    for (int i = 0; i < clicks.getNumPrograms(); ++i)
+        menu.addItem (i + 1, clicks.getProgramName (i), true, i == current);
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (presetBox),
+                        [safe = juce::Component::SafePointer<ClicksEditor> (this)] (int picked)
+                        {
+                            if (safe != nullptr && picked > 0)
+                                safe->choosePreset (picked - 1);
+                        });
 }
 
 std::unique_ptr<ClicksEditor::Knob> ClicksEditor::addKnob (const juce::String& id, const juce::String& name,
@@ -1133,21 +1179,232 @@ void ClicksEditor::placeRow (std::vector<std::unique_ptr<Knob>>& knobs, int begi
     }
 }
 
+// Starfield, title wash, and the three paper sheets. Drawn once per layout
+// and blitted in paint(), so the big scans are resampled once.
+// Flip every channel in place. ARGB is premultiplied, so the inverse of a
+// colour under alpha a is a minus the stored value.
+static void invertPixels (juce::Image& image)
+{
+    juce::Image::BitmapData px (image, juce::Image::BitmapData::readWrite);
+    for (int y = 0; y < px.height; ++y)
+    {
+        if (px.pixelFormat == juce::Image::ARGB)
+        {
+            for (int x = 0; x < px.width; ++x)
+            {
+                auto* p = reinterpret_cast<juce::PixelARGB*> (px.getPixelPointer (x, y));
+                const int a = p->getAlpha();
+                p->setARGB ((juce::uint8) a,
+                            (juce::uint8) juce::jmax (0, a - (int) p->getRed()),
+                            (juce::uint8) juce::jmax (0, a - (int) p->getGreen()),
+                            (juce::uint8) juce::jmax (0, a - (int) p->getBlue()));
+            }
+        }
+        else if (px.pixelFormat == juce::Image::RGB)
+        {
+            for (int x = 0; x < px.width; ++x)
+            {
+                auto* p = reinterpret_cast<juce::PixelRGB*> (px.getPixelPointer (x, y));
+                p->setARGB (255, (juce::uint8) (255 - p->getRed()),
+                            (juce::uint8) (255 - p->getGreen()),
+                            (juce::uint8) (255 - p->getBlue()));
+            }
+        }
+    }
+}
+
+void ClicksEditor::bakeBackdrop()
+{
+    const int w = getWidth();
+    const int h = getHeight();
+    if (w < 1 || h < 1)
+        return;
+    // The software image type keeps every pixel under our control. The
+    // native (CoreGraphics) draw left the scanned sheets see-through in the
+    // host, so the sheets below are written straight into the pixels.
+    backdrop = juce::Image (juce::SoftwareImageType().create (juce::Image::ARGB, w, h, true));
+    {
+        juce::Graphics g (backdrop);
+
+        g.fillAll (juce::Colours::black);
+        if (field.isValid())
+            g.drawImage (field, getLocalBounds().toFloat(), juce::RectanglePlacement::fillDestination);
+
+        if (! titleBand.isEmpty())
+        {
+            auto band = titleBand;
+            if (! initButton.getBounds().isEmpty())
+                band.setBottom (initButton.getBottom() + 2);
+            g.setColour (juce::Colours::black.withAlpha (0.42f));
+            g.fillRect (band);
+        }
+    }
+
+    // Dark mode flips the whole face at paint time. The stars are already
+    // dark, so they go in flipped here and come out as drawn.
+    if (dark)
+        invertPixels (backdrop);
+
+    {
+        juce::Graphics g (backdrop);
+
+        // Drawn card for a missing scan.
+        auto card = [&] (juce::Rectangle<int> panel, const juce::Image& plate, uint32_t salt)
+        {
+            if (panel.isEmpty() || plate.isValid())
+                return;
+            const auto shape = wobbleRect (panel.toFloat(), salt);
+            g.setColour (kPaper);
+            g.fillPath (shape);
+            g.setTiledImageFill (grain, 0.f, 0.f, 0.85f);
+            g.fillPath (shape);
+            g.setColour (kPencil);
+            g.strokePath (shape, juce::PathStrokeType (1.8f));
+        };
+        card (genPanel, look.panelMain, 0x61u);
+        card (filterPanel, look.panelMain, 0x9Au);
+        card (outPanel, look.panelOut, 0x2Bu);
+    }
+
+    // Shrink the scan to the panel, a box average per pixel, and blend it
+    // into the backdrop by hand with a hard alpha: the drawing is solid
+    // paper, the clear margin around it stays clear, and only a one pixel
+    // rim blends with the stars.
+    auto sheet = [&] (juce::Rectangle<int> panel, const juce::Image& plate)
+    {
+        if (panel.isEmpty() || ! plate.isValid())
+            return;
+        const bool wide = panel == outPanel;
+        const float cropL = wide ? 0.0297f : 0.0211f;
+        const float cropR = wide ? 0.0309f : 0.0211f;
+        const float cropT = wide ? 0.1031f : 0.0178f;
+        const float cropB = wide ? 0.1147f : 0.0222f;
+        const int sw = plate.getWidth();
+        const int sh = plate.getHeight();
+        const juce::Rectangle<int> src ((int) std::lround ((float) sw * cropL),
+                                        (int) std::lround ((float) sh * cropT),
+                                        juce::jmax (1, (int) std::lround ((float) sw * (1.f - cropL - cropR))),
+                                        juce::jmax (1, (int) std::lround ((float) sh * (1.f - cropT - cropB))));
+        const int dw = panel.getWidth();
+        const int dh = panel.getHeight();
+        juce::Image::BitmapData in (plate, juce::Image::BitmapData::readOnly);
+        juce::Image::BitmapData out (backdrop, juce::Image::BitmapData::readWrite);
+        for (int y = 0; y < dh; ++y)
+        {
+            const int oy = panel.getY() + y;
+            if (oy < 0 || oy >= out.height)
+                continue;
+            const int y0 = src.getY() + (int) ((int64_t) y * src.getHeight() / dh);
+            const int y1 = juce::jmax (y0 + 1, src.getY() + (int) ((int64_t) (y + 1) * src.getHeight() / dh));
+            for (int x = 0; x < dw; ++x)
+            {
+                const int ox = panel.getX() + x;
+                if (ox < 0 || ox >= out.width)
+                    continue;
+                const int x0 = src.getX() + (int) ((int64_t) x * src.getWidth() / dw);
+                const int x1 = juce::jmax (x0 + 1, src.getX() + (int) ((int64_t) (x + 1) * src.getWidth() / dw));
+                uint32_t r = 0, gr = 0, b = 0, a = 0, n = 0;
+                for (int yy = y0; yy < y1 && yy < in.height; ++yy)
+                    for (int xx = x0; xx < x1 && xx < in.width; ++xx)
+                    {
+                        const auto c = in.getPixelColour (xx, yy);
+                        const uint32_t ca = c.getAlpha();
+                        a += ca;
+                        r += c.getRed() * ca;
+                        gr += c.getGreen() * ca;
+                        b += c.getBlue() * ca;
+                        ++n;
+                    }
+                if (n == 0 || a == 0)
+                    continue;
+                const float cover = (float) a / (255.f * (float) n);
+                const float hard = juce::jlimit (0.f, 1.f, (cover - 0.35f) / 0.3f);
+                if (hard <= 0.f)
+                    continue;
+                const juce::Colour ink ((juce::uint8) (r / a), (juce::uint8) (gr / a), (juce::uint8) (b / a));
+                if (hard >= 1.f)
+                    out.setPixelColour (ox, oy, ink);
+                else
+                    out.setPixelColour (ox, oy, out.getPixelColour (ox, oy).interpolatedWith (ink, hard));
+            }
+        }
+    };
+    sheet (genPanel, look.panelMain);
+    sheet (filterPanel, look.panelMain);
+    sheet (outPanel, look.panelOut);
+}
+
+void ClicksEditor::Invert::applyEffect (juce::Image& image, juce::Graphics& g, float, float alpha)
+{
+    invertPixels (image);
+    g.setOpacity (alpha);
+    g.drawImageAt (image, 0, 0);
+}
+
+void ClicksEditor::applyTheme()
+{
+    darkButton.setButtonText (dark ? "light" : "dark");
+    for (auto* child : getChildren())
+        child->setComponentEffect (dark ? &invert : nullptr);
+    // Menus open in their own window, outside the effect, so their colours flip here.
+    auto ink = [this] (juce::Colour c)
+    {
+        return dark ? juce::Colour::fromRGBA ((juce::uint8) (255 - c.getRed()), (juce::uint8) (255 - c.getGreen()),
+                                              (juce::uint8) (255 - c.getBlue()), c.getAlpha())
+                    : c;
+    };
+    look.setColour (juce::PopupMenu::backgroundColourId, ink (kPaper));
+    look.setColour (juce::PopupMenu::textColourId, ink (kPencil));
+    look.setColour (juce::PopupMenu::highlightedBackgroundColourId, ink (juce::Colour (0xffddd4c4)));
+    look.setColour (juce::PopupMenu::highlightedTextColourId, ink (kPencil));
+    bakeBackdrop();
+    repaint();
+}
+
+// Draw the dirty part of the face into a plate at screen resolution, flip
+// it, and blit it back. The plate is only as big as the region being
+// repainted, so the 30 Hz scope and meter updates stay cheap.
+void ClicksEditor::paintInverted (juce::Graphics& g)
+{
+    const auto clip = g.getClipBounds();
+    if (clip.isEmpty())
+        return;
+    const float scale = g.getInternalContext().getPhysicalPixelScaleFactor();
+    const int pw = juce::jmax (1, (int) std::ceil ((float) clip.getWidth() * scale));
+    const int ph = juce::jmax (1, (int) std::ceil ((float) clip.getHeight() * scale));
+    if (! darkPlate.isValid() || darkPlate.getWidth() != pw || darkPlate.getHeight() != ph)
+        darkPlate = juce::Image (juce::Image::ARGB, pw, ph, true);
+    else
+        darkPlate.clear (darkPlate.getBounds());
+    {
+        juce::Graphics g2 (darkPlate);
+        g2.addTransform (juce::AffineTransform::translation ((float) -clip.getX(), (float) -clip.getY())
+                             .scaled (scale));
+        paintFace (g2);
+    }
+    invertPixels (darkPlate);
+    juce::Graphics::ScopedSaveState ss (g);
+    g.addTransform (juce::AffineTransform::scale (1.f / scale));
+    g.drawImageAt (darkPlate, (int) std::lround ((float) clip.getX() * scale),
+                   (int) std::lround ((float) clip.getY() * scale));
+}
+
 void ClicksEditor::paint (juce::Graphics& g)
 {
-    if (field.isValid())
+    if (dark)
+        paintInverted (g);
+    else
+        paintFace (g);
+}
+
+void ClicksEditor::paintFace (juce::Graphics& g)
+{
+    if (backdrop.isValid() && backdrop.getWidth() == getWidth() && backdrop.getHeight() == getHeight())
+        g.drawImageAt (backdrop, 0, 0);
+    else if (field.isValid())
         g.drawImage (field, getLocalBounds().toFloat(), juce::RectanglePlacement::fillDestination);
     else
         g.fillAll (juce::Colours::black);
-
-    if (! titleBand.isEmpty())
-    {
-        auto band = titleBand;
-        if (! initButton.getBounds().isEmpty())
-            band.setBottom (initButton.getBottom() + 2);
-        g.setColour (juce::Colours::black.withAlpha (0.42f));
-        g.fillRect (band);
-    }
 
     if (! scopePanel.isEmpty())
     {
@@ -1190,51 +1447,19 @@ void ClicksEditor::paint (juce::Graphics& g)
         }
     }
 
-    auto paper = [&] (juce::Rectangle<int> panel, const juce::Image& plate, uint32_t salt,
-                      const juce::String& title, int titleDrop)
+    // The sheets are in the backdrop. Only the titles are live here.
+    auto paper = [&] (juce::Rectangle<int> panel, const juce::String& title, int titleDrop)
     {
         if (panel.isEmpty())
             return;
-        if (plate.isValid())
-        {
-            // Crop inside the solid pixels. The scan's clear margin starts further out than this.
-            const bool wide = panel == outPanel;
-            const float cropL = wide ? 0.040f : 0.030f;
-            const float cropR = wide ? 0.042f : 0.030f;
-            const float cropT = wide ? 0.130f : 0.026f;
-            const float cropB = wide ? 0.150f : 0.030f;
-            const int sw = plate.getWidth();
-            const int sh = plate.getHeight();
-            const int sx = (int) std::lround ((float) sw * cropL);
-            const int sy = (int) std::lround ((float) sh * cropT);
-            const int sW = juce::jmax (1, (int) std::lround ((float) sw * (1.f - cropL - cropR)));
-            const int sH = juce::jmax (1, (int) std::lround ((float) sh * (1.f - cropT - cropB)));
-            // The sheet is the panel. The starfield stays in the gaps between panels.
-            const auto dest = panel;
-            g.setColour (kPaper);
-            g.fillRect (dest);
-            g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
-            g.drawImage (plate, dest.getX(), dest.getY(), dest.getWidth(), dest.getHeight(),
-                         sx, sy, sW, sH, false);
-        }
-        else
-        {
-            const auto card = wobbleRect (panel.toFloat(), salt);
-            g.setColour (kPaper.withAlpha (0.68f));
-            g.fillPath (card);
-            g.setTiledImageFill (grain, 0.f, 0.f, 0.85f);
-            g.fillPath (card);
-            g.setColour (kPencil);
-            g.strokePath (card, juce::PathStrokeType (1.8f));
-        }
         g.setColour (kPencil);
         g.setFont (chicagoFont (26.f));
-        g.drawText (title, panel.reduced (20, 0).withTrimmedTop (titleDrop).removeFromTop (30),
+        g.drawText (title, panel.reduced (26, 0).withTrimmedTop (titleDrop).removeFromTop (30),
                     juce::Justification::centredLeft);
     };
-    paper (genPanel, look.panelMain, 0x61u, "source", 14);
-    paper (filterPanel, look.panelMain, 0x9Au, "effects", 14);
-    paper (outPanel, look.panelOut, 0x2Bu, "output", juce::jmax (16, outPanel.getHeight() * 11 / 100));
+    paper (genPanel, "source", 16);
+    paper (filterPanel, "effects", 16);
+    paper (outPanel, "output", juce::jmax (16, outPanel.getHeight() * 11 / 100));
 
     if (! presetBox.getBounds().isEmpty())
     {
@@ -1541,7 +1766,7 @@ void ClicksEditor::paintOverChildren (juce::Graphics&)
 void ClicksEditor::resized()
 {
     const int wantW = 1216;
-    const int wantH = 1066;
+    const int wantH = 1082;
     if (getWidth() != wantW || getHeight() != wantH)
     {
         setSize (wantW, wantH);
@@ -1570,10 +1795,16 @@ void ClicksEditor::resized()
     bar.removeFromLeft (4);
     loadButton.setBounds (bar.removeFromLeft (64).reduced (0, 1));
     bar.removeFromLeft (8);
+    prevButton.setBounds (bar.removeFromLeft (24).reduced (0, 1));
+    bar.removeFromLeft (2);
+    darkButton.setBounds (bar.removeFromRight (56).reduced (0, 1));
+    bar.removeFromRight (8);
+    nextButton.setBounds (bar.removeFromRight (24).reduced (0, 1));
+    bar.removeFromRight (2);
     presetBox.setBounds (bar.reduced (0, 1));
 
     const int dropH = 28;
-    genPanel = left.removeFromTop (832);
+    genPanel = left.removeFromTop (848);
     left.removeFromTop (gap);
     outPanel = left;
     area.removeFromTop (logoH + gap);
@@ -1591,8 +1822,9 @@ void ClicksEditor::resized()
         placeRow (knobs, begin, count, count, row);
     };
 
-    auto gen = genPanel.withTrimmedLeft (14).withTrimmedRight (14)
-                       .withTrimmedTop (8).withTrimmedBottom (12);
+    // Content stays inside the pencil frame of the scan.
+    auto gen = genPanel.withTrimmedLeft (18).withTrimmedRight (19)
+                       .withTrimmedTop (14).withTrimmedBottom (22);
     gen.removeFromTop (42);
     auto placeProminent = [this] (Knob& knob, juce::Rectangle<int> cell, float title)
     {
@@ -1706,8 +1938,8 @@ void ClicksEditor::resized()
 
     lfoPanel = gen;
 
-    auto filt = filterPanel.withTrimmedLeft (14).withTrimmedRight (14)
-                           .withTrimmedTop (8).withTrimmedBottom (12);
+    auto filt = filterPanel.withTrimmedLeft (18).withTrimmedRight (19)
+                           .withTrimmedTop (14).withTrimmedBottom (22);
     filt.removeFromTop (42);
     {
         const int avail = filt.getHeight();
@@ -1720,43 +1952,9 @@ void ClicksEditor::resized()
         const int over = tapeH + filtH + pairH + crushH + delayH + compH - avail;
         if (over > 0)
             tapeH = juce::jmax (236, tapeH - over);
-        tapeFrame = filt.removeFromTop (tapeH);
-        auto tape = tapeFrame.reduced (6, 4);
-        playTag = tape.removeFromTop (22);
-        const int knobRowH = juce::jmin (86, juce::jmax (64, tape.getHeight() / 3));
-        auto knobRow = tape.removeFromBottom (knobRowH);
-        tape.removeFromBottom (2);
-        const int artLeft = tape.getX() + (tape.getWidth() * 52) / 100;
-        tapeArt = juce::Rectangle<int> (artLeft, tape.getY(),
-                                        tape.getRight() - artLeft - 2, tape.getHeight()).reduced (2, 2);
-        if (generator.size() > 2 && generator[2] != nullptr)
-        {
-            const int speedW = juce::jmin (360, tape.getWidth());
-            const int speedH = juce::jmax (110, tape.getHeight() - (dropH + 2));
-            auto speedCol = tape.removeFromTop (speedH).removeFromLeft (speedW);
-            auto knobCell = speedCol.removeFromTop (juce::jmax (80, speedCol.getHeight() - 26));
-            generator[2]->slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 72, 16);
-            placeProminent (*generator[2], knobCell, 18.f);
-            auto disc = generator[2]->slider.getBounds();
-            const int side = juce::jmin (disc.getWidth(), disc.getHeight() + 6);
-            generator[2]->slider.setBounds (disc.withSizeKeepingCentre (side, disc.getHeight()));
-            speedCol.removeFromTop (2);
-            auto syncRow = speedCol.removeFromTop (22).reduced (6, 1);
-            syncTick.setBounds (syncRow.removeFromLeft (132));
-            syncRow.removeFromLeft (8);
-            pitchTick.setBounds (syncRow.removeFromLeft (156));
-        }
-        placeDrop (scatLabel, scatBox, tape.removeFromTop (dropH).removeFromLeft (220));
-        tape = knobRow;
-        if (generator.size() > 8 && generator[8] != nullptr)
-            placeProminent (*generator[8], tape.removeFromLeft (juce::jmin (108, tape.getWidth() / 4)), 15.f);
-        if (! wobble.empty() && wobble[0] != nullptr)
-            placeProminent (*wobble[0], tape.removeFromLeft (juce::jmin (108, tape.getWidth() / 3)), 15.f);
-        placeCells ({ generator.size() > 7 ? generator[7].get() : nullptr,
-                      generator.size() > 9 ? generator[9].get() : nullptr,
-                      generator.size() > 13 ? generator[13].get() : nullptr },
-                    tape);
 
+        // Chain order on the panel: filter, formant and ring, crush, delay and
+        // reverb, then the tape just above the compressor.
         filtFrame = filt.removeFromTop (filtH);
     {
         auto box = filtFrame.reduced (4, 2);
@@ -1809,6 +2007,44 @@ void ClicksEditor::resized()
             revTag = box.removeFromTop (22);
             placeTight (reverb, 0, 3, 88, box);
         }
+    }
+    {
+        tapeFrame = filt.removeFromTop (tapeH);
+        auto tape = tapeFrame.reduced (6, 4);
+        playTag = tape.removeFromTop (22);
+        const int knobRowH = juce::jmin (86, juce::jmax (64, tape.getHeight() / 3));
+        auto knobRow = tape.removeFromBottom (knobRowH);
+        tape.removeFromBottom (2);
+        const int artLeft = tape.getX() + (tape.getWidth() * 52) / 100;
+        tapeArt = juce::Rectangle<int> (artLeft, tape.getY(),
+                                        tape.getRight() - artLeft - 2, tape.getHeight()).reduced (2, 2);
+        if (generator.size() > 2 && generator[2] != nullptr)
+        {
+            const int speedW = juce::jmin (360, tape.getWidth());
+            const int speedH = juce::jmax (110, tape.getHeight() - (dropH + 2));
+            auto speedCol = tape.removeFromTop (speedH).removeFromLeft (speedW);
+            auto knobCell = speedCol.removeFromTop (juce::jmax (80, speedCol.getHeight() - 26));
+            generator[2]->slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 72, 16);
+            placeProminent (*generator[2], knobCell, 18.f);
+            auto disc = generator[2]->slider.getBounds();
+            const int side = juce::jmin (disc.getWidth(), disc.getHeight() + 6);
+            generator[2]->slider.setBounds (disc.withSizeKeepingCentre (side, disc.getHeight()));
+            speedCol.removeFromTop (2);
+            auto syncRow = speedCol.removeFromTop (22).reduced (6, 1);
+            syncTick.setBounds (syncRow.removeFromLeft (132));
+            syncRow.removeFromLeft (8);
+            pitchTick.setBounds (syncRow.removeFromLeft (156));
+        }
+        placeDrop (scatLabel, scatBox, tape.removeFromTop (dropH).removeFromLeft (220));
+        tape = knobRow;
+        if (generator.size() > 8 && generator[8] != nullptr)
+            placeProminent (*generator[8], tape.removeFromLeft (juce::jmin (108, tape.getWidth() / 4)), 15.f);
+        if (! wobble.empty() && wobble[0] != nullptr)
+            placeProminent (*wobble[0], tape.removeFromLeft (juce::jmin (108, tape.getWidth() / 3)), 15.f);
+        placeCells ({ generator.size() > 7 ? generator[7].get() : nullptr,
+                      generator.size() > 9 ? generator[9].get() : nullptr,
+                      generator.size() > 13 ? generator[13].get() : nullptr },
+                    tape);
     }
     compFrame = filt.removeFromTop (compH);
     {
@@ -1936,6 +2172,7 @@ void ClicksEditor::resized()
             layLfo ({}, lfoShapeLabel[i], lfoShapeBox[i], lfoDestLabel[i], lfoDestBox[i],
                     lfo[(size_t) (i * 2)].get(), lfo[(size_t) (i * 2 + 1)].get(), lfoSync[i], false);
     }
+    bakeBackdrop();
 }
 
 void ClicksEditor::refreshSource()
@@ -2014,8 +2251,12 @@ void ClicksEditor::refreshFilter()
     for (int i : { 5, 6, 7 })
         if (i < (int) filter.size() && filter[(size_t) i] != nullptr)
             fadeKnob (*filter[(size_t) i], ring);
-    repaint (formantTag);
-    repaint (ringTag);
+    if (type != filtTypeShown)
+    {
+        filtTypeShown = type;
+        repaint (formantTag);
+        repaint (ringTag);
+    }
 }
 
 void ClicksEditor::refreshCrush()
@@ -2212,7 +2453,11 @@ void ClicksEditor::refreshSam()
             show (knob->label, speakOn, speakOn);
             show (knob->hint, false, false);
         }
-    repaint (samTag);
+    if (wave != waveShown)
+    {
+        waveShown = wave;
+        repaint (samTag);
+    }
 }
 
 void ClicksEditor::timerCallback()
@@ -2237,6 +2482,13 @@ void ClicksEditor::timerCallback()
         status.clear();
         showPreset();
         repaint();
+    }
+    // A host program change lands here too.
+    const auto named = clicks.apvts.state.getProperty ("preset").toString();
+    if (named != presetName)
+    {
+        presetName = named;
+        showPreset();
     }
     refreshSam();
     refreshFilter();
@@ -2407,14 +2659,7 @@ juce::File ClicksEditor::presetFolder() const
 
 void ClicksEditor::initPreset()
 {
-    for (auto* param : clicks.getParameters())
-        if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (param))
-            ranged->setValueNotifyingHost (ranged->getDefaultValue());
-    clicks.setSamText ("hello");
-    sayBox.setText ("hello", juce::dontSendNotification);
-    presetName.clear();
-    clicks.apvts.state.setProperty ("preset", "", nullptr);
-    showNote (clicks.lockSpeech());
+    choosePreset (0);
 }
 
 void ClicksEditor::savePreset()

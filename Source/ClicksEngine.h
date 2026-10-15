@@ -19,15 +19,17 @@
    pitchFix 1 keeps speech pitch and only changes the time.
    pitchFix 0 is tape: slowing drops the pitch and roughens the sound.
    samDrag stretches the locked word on the fly. 1 keeps the pace, 0 nearly stops it.
-   Warble and Repeat move every source, including Sam and eSpeak. The sub stays put.
-   ScatterGlide slides between warble targets. SrcGlide slides the source pitch
-   when the key changes. The sub ignores both for now.
+   Warble is the tape stage on the bus: a swaying read head that moves everything
+   passing through it, sub, echoes, and speech alike. See tapeStage().
+   Repeat moves each source by a fixed run of pitches. The sub stays put there.
+   ScatterGlide adds a slow wander to the warble, and slides Repeat between steps.
+   SrcGlide slides the source pitch when the key changes. The sub ignores it.
    The sub has its own fine tune, pulse width, and envelope.
    When sync is on, that rate is 1 and the locked Sam sample is fit so
    the phrase fills restartQuarters, then starts again on the beat.
    Delay, attack, decay, and release can each lock to the same divisions.
-   Scatter mode 0 warbles: a little pitch drift at low depth, up to whole-semitone
-   jumps at full depth, on a short clock or once per beat when sync is on.
+   Scatter mode 0 warbles: wow at warbleHz, a faster flutter on top, and a
+   wander when scatterGlide is up. Depth runs from a hair to six semitones.
    Mode 1 repeats `steps` pitches inside one Speed window:
    the beat division when sync is on, or Speed as seconds when it is free.
    Four LFOs (shape, rate, depth, dest) bend cut, reso, delay, echo, wet,
@@ -72,12 +74,12 @@ struct ClickParams
     int pitchFix = 1;    // 1 keeps speech pitch. 0 is tape: pitch follows speed and the sound roughens
     int sync = 0;        // 1 restarts Sam on restartQuarters
     float restartQuarters = 0.f; // beat length, in quarter notes. 0 is off.
-    float scatter = 1.f; // 0 = sit on the note, 1 = full warble reach
+    float scatter = 1.f; // 0 = sit on the note, 1 = full warble reach (six semitones)
     float seed = 42.f;   // which shape, with the note
-    int scatMode = 0;    // 0 warble (tape drift), 1 repeat (a fixed run)
+    int scatMode = 0;    // 0 warble (tape wow and flutter on the bus), 1 repeat (a fixed run per source)
     float steps = 5.f;   // how many pitches the repeat run holds
-    float scatterGlide = 0.f; // seconds to slide between warble targets. 0 is instant
-    float warbleHz = 0.f;     // 0 keeps the old clock. Above that, drift speed ignores tape speed.
+    float scatterGlide = 0.f; // warble: seconds per wander step, 0 is pure wow. repeat: slide time between steps
+    float warbleHz = 0.f;     // wow rate. 0 falls back to 1.2 Hz. Tape speed does not move it.
     float srcGlide = 0.f;     // seconds to slide source pitch on a new key. 0 is instant
     float doublet = 0.f; // retired. The faster copy is gone.
     float delaySec = 1.f;
@@ -242,6 +244,9 @@ public:
         delay.assign ((size_t) delayLen, 0.f);
         write = 0;
         delayReady = false;
+        tapeLen = (int) std::ceil (sampleRate * 0.15) + 16;
+        tapeRing.assign ((size_t) tapeLen, 0.f);
+        clearTape();
         resoLen = (int) std::ceil (sampleRate / 40.0) + 8;
         reso.assign ((size_t) resoLen, 0.f);
         resoWrite = 0;
@@ -286,6 +291,7 @@ public:
         std::fill (delay.begin(), delay.end(), 0.f);
         write = 0;
         delayReady = false;
+        clearTape();
         std::fill (reso.begin(), reso.end(), 0.f);
         resoWrite = 0;
         filtIc1 = 0.f;
@@ -334,7 +340,9 @@ public:
     {
         if (src == nullptr || length < 2 || refHz < 20.f)
             return;
-        const int slot = 1 - speechSlot.load (std::memory_order_acquire);
+        // Three slots: the one playing, the one a held note may still be
+        // fading from, and this one. The audio thread never reads this slot.
+        const int slot = (speechSlot.load (std::memory_order_acquire) + 1) % 3;
         speech[slot].samples.assign (src, src + length);
         speech[slot].len = length;
         speech[slot].refHz = refHz;
@@ -527,8 +535,14 @@ public:
         };
         const bool stockRoute = routeSlot[0] == 0 && routeSlot[1] == 1 && routeSlot[2] == 2
             && routeSlot[3] == 3 && routeSlot[4] == 4 && routeSlot[5] == 5;
-        const bool tapeOnVoice = stockRoute && fxOrder != 5;
         const bool crushOnVoice = stockRoute && (fxOrder == 0 || fxOrder >= 3);
+        tuneTape();
+        // Effect order for the custom route. Fixed for the whole block.
+        int order[6] = { 0, 1, 2, 3, 4, 5 };
+        std::stable_sort (order, order + 6, [&] (int a, int b)
+        {
+            return routeSlot[a] < routeSlot[b];
+        });
         latchLfoBases();
         slewCoef = 1.f - std::exp (-1.f / std::max (1.f, 0.004f * (float) sampleRate));
         polyCoef = 1.f - std::exp (-1.f / std::max (1.f, 0.025f * (float) sampleRate));
@@ -706,8 +720,6 @@ public:
                             s += sampleLayer (voice.layer[n], play);
                         }
                     }
-                if (tapeOnVoice && ! samVoice && ! mix.pitchFix)
-                    s = tapeColour (s, slowNow);
                 s *= srcNow;
                 const float env = advanceEnv (voice);
                 if (! voice.active && subOn && voice.subEnv > 0.0008f)
@@ -766,9 +778,7 @@ public:
             };
             auto tapeBus = [&] (float s)
             {
-                if (mix.pitchFix)
-                    return s;
-                return tapeColour (s, slowBus);
+                return tapeStage (s, slowBus);
             };
             auto filtBus = [&] (float s)
             {
@@ -811,6 +821,11 @@ public:
                 polyGain += polyDelta * polyCoef;
             x *= polyGain;
 
+            // Stock chain: the tape runs first, on the whole voice mix, sub
+            // included. Order 5 keeps it after the delay instead.
+            if (stockRoute && fxOrder != 5)
+                x = tapeBus (x);
+
             float body = x;
             if (! stockRoute)
             {
@@ -821,11 +836,6 @@ public:
                 }
                 glideDelay (targetDelay);
                 const float y = readDelay (smoothedDelay);
-                int order[6] = { 0, 1, 2, 3, 4, 5 };
-                std::stable_sort (order, order + 6, [&] (int a, int b)
-                {
-                    return routeSlot[a] < routeSlot[b];
-                });
                 float sig = x;
                 float send = x;
                 for (int n = 0; n < 6; ++n)
@@ -1421,8 +1431,6 @@ private:
             s = s * (1.f - w) + old * w;
             --layer.fadeLeft;
         }
-        if (! mix.pitchFix)
-            s = tapeColour (s, clock);
         return s;
     }
 
@@ -1436,6 +1444,137 @@ private:
         const float drive = 1.f + depart * 2.4f;
         const float bent = x + 0.18f * depart * x * std::abs (x);
         return std::tanh (bent * drive) / drive;
+    }
+
+    // The tape stage. Everything on the bus passes through a short delay
+    // line whose read head sways, so the pitch of the whole mix sways with
+    // it: wow at the warble rate, a lighter flutter about five times faster,
+    // and a slow wander when scatterGlide is up. The sway is sized so the
+    // pitch reaches the depth the amount knob asks for, within a 50 ms
+    // head travel, so slow wow stays gentle and quick wow can go deep.
+    // Depth 0 bypasses the line. Then the deck colour, when pitch follows speed.
+    static uint32_t tapeHash (uint32_t s)
+    {
+        s ^= s >> 16;
+        s *= 0x7FEB352Du;
+        s ^= s >> 15;
+        s *= 0x846CA68Bu;
+        s ^= s >> 16;
+        return s;
+    }
+
+    static float tapeUnit (uint32_t s)
+    {
+        return ((tapeHash (s) >> 8) / 16777216.f) * 2.f - 1.f;
+    }
+
+    void clearTape()
+    {
+        std::fill (tapeRing.begin(), tapeRing.end(), 0.f);
+        tapeWrite = 0;
+        tapeBase = 0.f;
+        tapeDepth = 0.f;
+        tapeWowPhase = 0.f;
+        tapeFlutPhase = 0.f;
+        tapeDriftPhase = 0.f;
+        tapeDriftStep = -1;
+        tapeDriftFrom = 0.f;
+        tapeDriftTo = 0.f;
+    }
+
+    // Once per block: rates and shares from the knobs.
+    void tuneTape()
+    {
+        const float sr = (float) std::max (1.0, sampleRate);
+        tapeRate = mix.warbleHz > 0.05f ? std::clamp (mix.warbleHz, 0.05f, 40.f) : 1.2f;
+        tapeFlutAmp = 0.18f * std::clamp ((12.f - tapeRate) / 8.f, 0.f, 1.f);
+        const float glide = std::clamp (mix.scatterGlide, 0.f, 4.f);
+        tapeWanderSec = std::max (0.1f, glide);
+        tapeWander = glide < 0.001f ? 0.f : 0.5f * std::clamp (glide / 0.1f, 0.f, 1.f);
+        tapeWowInc = tapeRate / sr;
+        tapeFlutInc = tapeRate * 5.3f / sr;
+        tapeDriftInc = 1.f / (tapeWanderSec * sr);
+        tapeSeedHash = (uint32_t) std::lround (std::clamp (mix.seed, 0.f, 999.f) * 17.f);
+        tapeSeedPhase = (tapeHash (tapeSeedHash ^ 0x5bd1e995u) >> 8) / 16777216.f;
+        tapeCoef = 1.f - std::exp (-1.f / std::max (1.f, 0.08f * sr));
+        tapeOn = mix.scatMode == 0;
+    }
+
+    float tapeStage (float x, float rate)
+    {
+        if (tapeLen > 16)
+        {
+            tapeRing[(size_t) tapeWrite] = x;
+            const int wrote = tapeWrite;
+            tapeWrite = tapeWrite + 1 >= tapeLen ? 0 : tapeWrite + 1;
+
+            const float depth = tapeOn ? std::clamp (mix.scatter, 0.f, 1.f) : 0.f;
+            float depthTarget = 0.f;
+            float baseTarget = 0.f;
+            if (depth > 0.0008f)
+            {
+                const float semis = 6.f * depth * depth;
+                const float reach = std::exp2 (semis / 12.f) - 1.f;
+                const float wave = (1.f - tapeWander) * 6.2831853f * tapeRate * (1.f + 5.3f * tapeFlutAmp);
+                const float wander = tapeWander * 3.14159265f / tapeWanderSec;
+                const float sway = std::min (0.05f, reach / std::max (0.01f, wave + wander));
+                depthTarget = sway * (float) sampleRate;
+                baseTarget = depthTarget * (1.f + tapeFlutAmp) + 3.f;
+            }
+            tapeDepth += (depthTarget - tapeDepth) * tapeCoef;
+            tapeBase += (baseTarget - tapeBase) * tapeCoef;
+
+            if (baseTarget > 0.f || tapeBase > 0.02f)
+            {
+                tapeWowPhase += tapeWowInc;
+                tapeWowPhase -= std::floor (tapeWowPhase);
+                tapeFlutPhase += tapeFlutInc;
+                tapeFlutPhase -= std::floor (tapeFlutPhase);
+                if (tapeDriftStep < 0)
+                {
+                    tapeDriftStep = 0;
+                    tapeDriftFrom = tapeUnit (tapeSeedHash ^ 0u);
+                    tapeDriftTo = tapeUnit (tapeSeedHash ^ 0x9E3779B9u);
+                    tapeDriftPhase = 0.f;
+                }
+                tapeDriftPhase += tapeDriftInc;
+                if (tapeDriftPhase >= 1.f)
+                {
+                    tapeDriftPhase -= std::floor (tapeDriftPhase);
+                    ++tapeDriftStep;
+                    tapeDriftFrom = tapeDriftTo;
+                    tapeDriftTo = tapeUnit (tapeSeedHash ^ ((uint32_t) (tapeDriftStep + 1) * 0x9E3779B9u));
+                }
+                const float wow = std::sin (6.2831853f * (tapeWowPhase + tapeSeedPhase));
+                const float flutter = tapeFlutAmp * std::sin (6.2831853f * (tapeFlutPhase + tapeSeedPhase * 0.37f));
+                const float ease = 0.5f - 0.5f * std::cos (3.14159265f * tapeDriftPhase);
+                const float drift = tapeDriftFrom + (tapeDriftTo - tapeDriftFrom) * ease;
+                const float m = (wow + flutter) * (1.f - tapeWander) + drift * tapeWander;
+
+                const float d = std::clamp (tapeBase + tapeDepth * m, 2.f, (float) tapeLen - 4.f);
+                float pos = (float) wrote - d;
+                if (pos < 0.f)
+                    pos += (float) tapeLen;
+                int i1 = (int) pos;
+                const float f = pos - (float) i1;
+                if (i1 >= tapeLen)
+                    i1 -= tapeLen;
+                const int i0 = i1 == 0 ? tapeLen - 1 : i1 - 1;
+                const int i2 = i1 + 1 >= tapeLen ? i1 + 1 - tapeLen : i1 + 1;
+                const int i3 = i2 + 1 >= tapeLen ? i2 + 1 - tapeLen : i2 + 1;
+                const float y0 = tapeRing[(size_t) i0];
+                const float y1 = tapeRing[(size_t) i1];
+                const float y2 = tapeRing[(size_t) i2];
+                const float y3 = tapeRing[(size_t) i3];
+                const float c1 = 0.5f * (y2 - y0);
+                const float c2 = y0 - 2.5f * y1 + 2.f * y2 - 0.5f * y3;
+                const float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
+                x = ((c3 * f + c2) * f + c1) * f + y1;
+            }
+        }
+        if (mix.pitchFix)
+            return x;
+        return tapeColour (x, rate);
     }
 
     struct CrushMem
@@ -2070,41 +2209,30 @@ private:
         lfoBaseSamDrag = mix.samDrag;
     }
 
+    // Repeat: each source walks a fixed run of pitches. Warble lives on the
+    // bus (tapeStage), so the sources sit still in that mode.
     void updateScatter (Voice& voice)
     {
         const float depth = std::clamp (mix.scatter, 0.f, 1.f);
-        if (depth < 0.0008f)
+        if (depth < 0.0008f || mix.scatMode == 0)
         {
             voice.scatTarget = 1.f;
             voice.scatMul = 1.f;
             return;
         }
         const double seconds = (double) scatterClock / std::max (1.0, sampleRate);
-        int step = scatterClock / std::max (1, (int) std::lround (sampleRate * 0.09));
+        int step = 0;
+        const int n = std::clamp ((int) std::lround (mix.steps), 1, 16);
         if (mix.warbleHz > 0.05f)
         {
-            const double window = 1.0 / (double) std::clamp (mix.warbleHz, 0.05f, 20.f);
-            if (mix.scatMode == 0)
-            {
-                step = (int) std::floor (seconds / window);
-            }
-            else
-            {
-                const int n = std::clamp ((int) std::lround (mix.steps), 1, 16);
-                double phase = std::fmod (seconds, window) / window;
-                if (phase < 0.0)
-                    phase = 0.0;
-                step = std::min (n - 1, (int) (phase * (double) n));
-            }
-        }
-        else if (mix.scatMode == 0)
-        {
-            if (mix.sync && mix.restartQuarters > 0.02f)
-                step = beatCellNow();
+            const double window = 1.0 / (double) std::clamp (mix.warbleHz, 0.05f, 40.f);
+            double phase = std::fmod (seconds, window) / window;
+            if (phase < 0.0)
+                phase = 0.0;
+            step = std::min (n - 1, (int) (phase * (double) n));
         }
         else
         {
-            const int n = std::clamp ((int) std::lround (mix.steps), 1, 16);
             double phase = 0.0;
             if (mix.sync && mix.restartQuarters > 0.02f)
             {
@@ -2130,21 +2258,10 @@ private:
             voice.scatStep = step;
             uint32_t s = voice.hash ^ (uint32_t) std::lround (std::clamp (mix.seed, 0.f, 999.f) * 17.f);
             s ^= (uint32_t) step * 0x9E3779B9u;
-            s ^= (uint32_t) mix.scatMode * 0x85EBCA6Bu;
+            s ^= 0x85EBCA6Bu;
             s = s * 1664525u + 1013904223u;
             const float u = ((s >> 8) / 16777216.f) * 2.f - 1.f;
-            if (mix.scatMode == 0)
-            {
-                // Tape warble: gentle drift when depth is low, semitone jumps when high.
-                const float subtle = depth * depth;
-                float semis = u * depth * 12.f * subtle;
-                const float snap = std::clamp ((depth - 0.2f) / 0.8f, 0.f, 1.f);
-                if (snap > 0.f)
-                    semis = semis * (1.f - snap) + std::round (semis) * snap;
-                voice.scatTarget = std::pow (2.f, semis / 12.f);
-            }
-            else
-                voice.scatTarget = std::pow (2.f, u * depth);
+            voice.scatTarget = std::pow (2.f, u * depth);
         }
         const float glide = std::clamp (mix.scatterGlide, 0.f, 4.f);
         if (glide < 0.001f)
@@ -2320,6 +2437,30 @@ private:
     ClickParams mix;
     std::vector<float> delay;
     int delayLen = 0;
+
+    // Tape stage. See tapeStage().
+    std::vector<float> tapeRing;
+    int tapeLen = 0;
+    int tapeWrite = 0;
+    bool tapeOn = true;
+    float tapeBase = 0.f;      // smoothed head position, samples
+    float tapeDepth = 0.f;     // smoothed sway, samples
+    float tapeCoef = 0.001f;
+    float tapeRate = 1.2f;
+    float tapeFlutAmp = 0.18f;
+    float tapeWander = 0.f;
+    float tapeWanderSec = 0.1f;
+    float tapeWowInc = 0.f;
+    float tapeFlutInc = 0.f;
+    float tapeDriftInc = 0.f;
+    float tapeWowPhase = 0.f;
+    float tapeFlutPhase = 0.f;
+    float tapeDriftPhase = 0.f;
+    int tapeDriftStep = -1;
+    float tapeDriftFrom = 0.f;
+    float tapeDriftTo = 0.f;
+    uint32_t tapeSeedHash = 0;
+    float tapeSeedPhase = 0.f;
     int write = 0;
     float smoothedDelay = 0.f;
     bool delayReady = false;
@@ -2536,12 +2677,14 @@ private:
 
     struct SpeechLoop
     {
+        // Room for a couple of seconds, so a typical word never reallocates.
+        SpeechLoop() { samples.reserve (96000); }
         std::vector<float> samples;
         int len = 0;
         float refHz = 106.f;
         double renderedRate = 44100.0;
     };
-    SpeechLoop speech[2];
+    SpeechLoop speech[3];
     std::atomic<int> speechSlot { 0 };
     int monoNote[16] {};
     float monoVel[16] {};

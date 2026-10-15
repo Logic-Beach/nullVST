@@ -11,6 +11,7 @@ ClicksProcessor::ClicksProcessor()
     : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "PARAMS", createLayout())
 {
+    bindTaps();
     setSamText ("hello");
     apvts.state.setProperty ("waveid", 2, nullptr);
     apvts.state.setProperty ("sawdown", 1, nullptr);
@@ -18,7 +19,26 @@ ClicksProcessor::ClicksProcessor()
     requestSpeech();
 }
 
-ClicksProcessor::~ClicksProcessor() = default;
+ClicksProcessor::~ClicksProcessor()
+{
+    cancelPendingUpdate();
+}
+
+void ClicksProcessor::bindTaps()
+{
+    static const char* const ids[tapCount] = {
+#define NG_TAP_NAME(n) #n,
+        NG_TAPS (NG_TAP_NAME)
+#undef NG_TAP_NAME
+    };
+    for (int i = 0; i < tapCount; ++i)
+    {
+        taps[i].raw = apvts.getRawParameterValue (ids[i]);
+        taps[i].param = apvts.getParameter (ids[i]);
+        // Every id above is in createLayout. A miss here is a typo.
+        jassert (taps[i].raw != nullptr && taps[i].param != nullptr);
+    }
+}
 
 void ClicksProcessor::prepareToPlay (double sampleRate, int)
 {
@@ -40,17 +60,17 @@ bool ClicksProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 ClickParams ClicksProcessor::readParams() const
 {
     ClickParams params;
-    const int picked = juce::jlimit (0, 7, (int) std::lround (apvts.getRawParameterValue ("wave")->load()));
+    const int picked = juce::jlimit (0, 7, (int) std::lround (tap (tap_wave)));
     // Menu: sine, saw up, saw down, square, triangle, noise, Sam, eSpeak.
     // Engine 2 stays the rising saw. 8 is the falling saw.
     static const int engineWave[8] = { 1, 2, 8, 3, 4, 5, 6, 7 };
     params.wave = engineWave[picked];
     params.voice = (params.wave == 6 || params.wave == 7) ? 4 : 1;
-    params.width = apvts.getRawParameterValue ("width")->load();
-    params.bits = apvts.getRawParameterValue ("bits")->load();
-    params.hold = apvts.getRawParameterValue ("hold")->load();
-    params.glitch = apvts.getRawParameterValue ("glitch")->load();
-    params.crushMix = apvts.getRawParameterValue ("crushmix")->load();
+    params.width = tap (tap_width);
+    params.bits = tap (tap_bits);
+    params.hold = tap (tap_hold);
+    params.glitch = tap (tap_glitch);
+    params.crushMix = tap (tap_crushmix);
     params.bitsOn = 1;
     params.crushOn = 1;
     int beats = 4;
@@ -65,104 +85,105 @@ ClickParams ClicksProcessor::readParams() const
                 if (*b > 1.0)
                     bpm = (float) *b;
         }
-    auto tempoSeconds = [&] (const char* id, const char* syncId, float freeSeconds) -> float
+    auto tempoSeconds = [&] (int id, int syncId) -> float
     {
-        if (apvts.getRawParameterValue (syncId)->load() <= 0.5f)
+        const float freeSeconds = tap (id);
+        if (tap (syncId) <= 0.5f)
             return freeSeconds;
-        auto* p = apvts.getParameter (id);
+        auto* p = taps[id].param;
         if (p == nullptr)
             return freeSeconds;
         const int index = ClickParams::divisionIndexNorm (p->getValue());
         return (float) (ClickParams::divisionQuarters (index, beats) * 60.0 / (double) bpm);
     };
 
-    params.slow = apvts.getRawParameterValue ("slow")->load();
-    params.pitchFix = apvts.getRawParameterValue ("pitchfix")->load() > 0.5f ? 1 : 0;
+    params.slow = tap (tap_slow);
+    params.pitchFix = tap (tap_pitchfix) > 0.5f ? 1 : 0;
     params.sync = 0;
     params.restartQuarters = 0.f;
-    if (apvts.getRawParameterValue ("slowsync")->load() > 0.5f)
+    if (tap (tap_slowsync) > 0.5f)
     {
         params.sync = 1;
         params.restartQuarters = (float) ClickParams::divisionQuarters (
             ClickParams::divisionIndex (params.slow), beats);
         params.slow = 1.f;
     }
-    params.scatter = apvts.getRawParameterValue ("scatter")->load();
-    params.seed = apvts.getRawParameterValue ("seed")->load();
-    params.scatMode = (int) apvts.getRawParameterValue ("scatmode")->load();
-    params.steps = apvts.getRawParameterValue ("steps")->load();
-    params.scatterGlide = apvts.getRawParameterValue ("scatglide")->load();
-    params.warbleHz = apvts.getRawParameterValue ("wobrate")->load();
-    params.srcGlide = apvts.getRawParameterValue ("srcglide")->load();
+    params.scatter = tap (tap_scatter);
+    params.seed = tap (tap_seed);
+    params.scatMode = (int) tap (tap_scatmode);
+    params.steps = tap (tap_steps);
+    params.scatterGlide = tap (tap_scatglide);
+    params.warbleHz = tap (tap_wobrate);
+    params.srcGlide = tap (tap_srcglide);
     params.doublet = 0.f;
-    params.delaySec = tempoSeconds ("delay", "delaysync", apvts.getRawParameterValue ("delay")->load());
-    params.feedback = apvts.getRawParameterValue ("feedback")->load();
-    params.echo = apvts.getRawParameterValue ("echo")->load();
-    params.poly = (int) apvts.getRawParameterValue ("poly")->load();
-    params.attack = tempoSeconds ("attack", "attacksync", apvts.getRawParameterValue ("attack")->load());
-    params.decay = tempoSeconds ("decay", "decaysync", apvts.getRawParameterValue ("decay")->load());
-    params.sustain = apvts.getRawParameterValue ("sustain")->load();
-    params.release = tempoSeconds ("release", "releasesync", apvts.getRawParameterValue ("release")->load());
-    params.subMode = (int) apvts.getRawParameterValue ("submode")->load();
-    params.subWave = (int) apvts.getRawParameterValue ("subwave")->load();
-    params.subTune = apvts.getRawParameterValue ("subtune")->load();
-    params.subFine = apvts.getRawParameterValue ("subfine")->load();
-    params.subMix = apvts.getRawParameterValue ("submix")->load();
-    params.subWidth = apvts.getRawParameterValue ("subwidth")->load();
-    params.subAttack = tempoSeconds ("subattack", "subattacksync", apvts.getRawParameterValue ("subattack")->load());
-    params.subDecay = tempoSeconds ("subdecay", "subdecaysync", apvts.getRawParameterValue ("subdecay")->load());
-    params.subSustain = apvts.getRawParameterValue ("subsustain")->load();
-    params.subRelease = tempoSeconds ("subrelease", "subreleasesync", apvts.getRawParameterValue ("subrelease")->load());
-    params.filterType = (int) apvts.getRawParameterValue ("filttype")->load();
-    params.filterPlace = (int) apvts.getRawParameterValue ("filtwhere")->load();
-    params.fxOrder = (int) apvts.getRawParameterValue ("fxorder")->load();
-    params.tapeSlot = (int) apvts.getRawParameterValue ("tapeslot")->load();
-    params.crushSlot = (int) apvts.getRawParameterValue ("crushslot")->load();
-    params.filtSlot = (int) apvts.getRawParameterValue ("filtslot")->load();
-    params.delaySlot = (int) apvts.getRawParameterValue ("delayslot")->load();
-    params.revSlot = (int) apvts.getRawParameterValue ("revslot")->load();
-    params.compSlot = (int) apvts.getRawParameterValue ("compslot")->load();
-    params.revSize = apvts.getRawParameterValue ("revsize")->load();
-    params.revDamp = apvts.getRawParameterValue ("revdamp")->load();
-    params.revMix = apvts.getRawParameterValue ("revmix")->load();
-    params.filterHz = apvts.getRawParameterValue ("filtcut")->load();
-    params.filterQ = apvts.getRawParameterValue ("filtq")->load();
-    params.formShift = apvts.getRawParameterValue ("formshift")->load();
-    params.formSpread = apvts.getRawParameterValue ("formspread")->load();
-    params.formBreath = apvts.getRawParameterValue ("formbreath")->load();
-    params.resoDamp = apvts.getRawParameterValue ("resodamp")->load();
-    params.resoTune = apvts.getRawParameterValue ("resotune")->load();
-    params.resoStack = apvts.getRawParameterValue ("resostack")->load();
-    params.fAttack = tempoSeconds ("fattack", "fattacksync", apvts.getRawParameterValue ("fattack")->load());
-    params.fDecay = tempoSeconds ("fdecay", "fdecaysync", apvts.getRawParameterValue ("fdecay")->load());
-    params.fSustain = apvts.getRawParameterValue ("fsustain")->load();
-    params.fRelease = tempoSeconds ("frelease", "freleasesync", apvts.getRawParameterValue ("frelease")->load());
-    params.filtAmt = apvts.getRawParameterValue ("fenv")->load();
-    params.compThresh = apvts.getRawParameterValue ("compthresh")->load();
-    params.compRatio = apvts.getRawParameterValue ("compratio")->load();
-    params.compGain = apvts.getRawParameterValue ("compgain")->load();
-    params.limitDb = apvts.getRawParameterValue ("limit")->load();
-    params.limitDist = apvts.getRawParameterValue ("limitdist")->load();
-    params.samDrag = params.wave == 7 ? 1.f : apvts.getRawParameterValue ("samslow")->load();
-    const float db = apvts.getRawParameterValue ("level")->load();
+    params.delaySec = tempoSeconds (tap_delay, tap_delaysync);
+    params.feedback = tap (tap_feedback);
+    params.echo = tap (tap_echo);
+    params.poly = (int) tap (tap_poly);
+    params.attack = tempoSeconds (tap_attack, tap_attacksync);
+    params.decay = tempoSeconds (tap_decay, tap_decaysync);
+    params.sustain = tap (tap_sustain);
+    params.release = tempoSeconds (tap_release, tap_releasesync);
+    params.subMode = (int) tap (tap_submode);
+    params.subWave = (int) tap (tap_subwave);
+    params.subTune = tap (tap_subtune);
+    params.subFine = tap (tap_subfine);
+    params.subMix = tap (tap_submix);
+    params.subWidth = tap (tap_subwidth);
+    params.subAttack = tempoSeconds (tap_subattack, tap_subattacksync);
+    params.subDecay = tempoSeconds (tap_subdecay, tap_subdecaysync);
+    params.subSustain = tap (tap_subsustain);
+    params.subRelease = tempoSeconds (tap_subrelease, tap_subreleasesync);
+    params.filterType = (int) tap (tap_filttype);
+    params.filterPlace = (int) tap (tap_filtwhere);
+    params.fxOrder = (int) tap (tap_fxorder);
+    params.tapeSlot = (int) tap (tap_tapeslot);
+    params.crushSlot = (int) tap (tap_crushslot);
+    params.filtSlot = (int) tap (tap_filtslot);
+    params.delaySlot = (int) tap (tap_delayslot);
+    params.revSlot = (int) tap (tap_revslot);
+    params.compSlot = (int) tap (tap_compslot);
+    params.revSize = tap (tap_revsize);
+    params.revDamp = tap (tap_revdamp);
+    params.revMix = tap (tap_revmix);
+    params.filterHz = tap (tap_filtcut);
+    params.filterQ = tap (tap_filtq);
+    params.formShift = tap (tap_formshift);
+    params.formSpread = tap (tap_formspread);
+    params.formBreath = tap (tap_formbreath);
+    params.resoDamp = tap (tap_resodamp);
+    params.resoTune = tap (tap_resotune);
+    params.resoStack = tap (tap_resostack);
+    params.fAttack = tempoSeconds (tap_fattack, tap_fattacksync);
+    params.fDecay = tempoSeconds (tap_fdecay, tap_fdecaysync);
+    params.fSustain = tap (tap_fsustain);
+    params.fRelease = tempoSeconds (tap_frelease, tap_freleasesync);
+    params.filtAmt = tap (tap_fenv);
+    params.compThresh = tap (tap_compthresh);
+    params.compRatio = tap (tap_compratio);
+    params.compGain = tap (tap_compgain);
+    params.limitDb = tap (tap_limit);
+    params.limitDist = tap (tap_limitdist);
+    params.samDrag = params.wave == 7 ? 1.f : tap (tap_samslow);
+    const float db = tap (tap_level);
     params.level = std::pow (10.f, db / 20.f);
-    params.srcLevel = apvts.getRawParameterValue ("srclevel")->load();
-    params.subLevel = apvts.getRawParameterValue ("sublevel")->load();
-    params.crushLevel = apvts.getRawParameterValue ("crushlevel")->load();
-    params.filtMix = apvts.getRawParameterValue ("filtmix")->load();
-    params.delayLevel = apvts.getRawParameterValue ("delaylevel")->load();
-    params.compMix = apvts.getRawParameterValue ("compmix")->load();
+    params.srcLevel = tap (tap_srclevel);
+    params.subLevel = tap (tap_sublevel);
+    params.crushLevel = tap (tap_crushlevel);
+    params.filtMix = tap (tap_filtmix);
+    params.delayLevel = tap (tap_delaylevel);
+    params.compMix = tap (tap_compmix);
     for (int i = 0; i < ClickParams::lfoCount; ++i)
     {
-        const juce::String n = juce::String (i + 1);
-        params.lfoShape[i] = (int) apvts.getRawParameterValue ("lfo" + n + "shape")->load();
-        params.lfoHz[i] = apvts.getRawParameterValue ("lfo" + n + "rate")->load();
-        params.lfoDepth[i] = apvts.getRawParameterValue ("lfo" + n + "depth")->load();
-        params.lfoDest[i] = (int) apvts.getRawParameterValue ("lfo" + n + "dest")->load();
-        params.lfoSync[i] = apvts.getRawParameterValue ("lfo" + n + "sync")->load() > 0.5f ? 1 : 0;
+        const int base = tap_lfo1shape + i * 5;
+        params.lfoShape[i] = (int) tap (base + 0);
+        params.lfoHz[i] = tap (base + 1);
+        params.lfoSync[i] = tap (base + 2) > 0.5f ? 1 : 0;
+        params.lfoDepth[i] = tap (base + 3);
+        params.lfoDest[i] = (int) tap (base + 4);
         if (params.lfoSync[i] != 0)
         {
-            if (auto* p = apvts.getParameter ("lfo" + n + "rate"))
+            if (auto* p = taps[base + 1].param)
                 params.lfoQuarters[i] = (float) ClickParams::divisionQuarters (
                     ClickParams::divisionIndexNorm (p->getValue()), beats);
         }
@@ -251,6 +272,8 @@ void ClicksProcessor::replacePluginState (const juce::XmlElement& xml)
     }
     apvts.replaceState (tree);
     loadMidiMapFromState();
+    currentProgram.store (juce::jlimit (0, getNumPrograms() - 1,
+                                        (int) apvts.state.getProperty ("program", 0)));
     setSamText (apvts.state.getProperty ("sam", "hello").toString());
     requestSpeech();
 }
@@ -426,7 +449,7 @@ void ClicksProcessor::renderRange (juce::AudioBuffer<float>& buffer, int start, 
 void ClicksProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
     juce::ScopedNoDenormals noDenormals;
-    keyboard.processNextMidiBuffer (midi, 0, buffer.getNumSamples(), true);
+    // The on-screen keyboard is hidden, so the audio thread no longer feeds it.
     buffer.clear();
 
     const ClickParams params = readParams();
@@ -469,6 +492,147 @@ juce::AudioProcessorEditor* ClicksProcessor::createEditor()
     return new ClicksEditor (*this);
 }
 
+// Shipped presets. Each starts from init and changes a few knobs.
+// A step with division true sets a synced time by its division index
+// (0 = 1/32t … 7 = 1/8, 10 = 1/4, 13 = 1/2, 15 = 1 bar).
+namespace
+{
+    struct Step
+    {
+        const char* id;
+        float value;
+        bool division = false;
+    };
+    struct Factory
+    {
+        const char* name;
+        const char* say;
+        std::vector<Step> steps;
+    };
+
+    const std::vector<Factory>& factoryPresets()
+    {
+        static const std::vector<Factory> table = {
+            { "", "hello", {} },
+            { "glass bell", "hello", {
+                { "wave", 0 }, { "subwave", 4 }, { "subtune", 12.f }, { "sublevel", 0.35f },
+                { "attack", 1, true }, { "decay", 13, true }, { "sustain", 0.2f }, { "release", 10, true },
+                { "subattack", 1, true }, { "subdecay", 13, true }, { "subsustain", 0.2f }, { "subrelease", 10, true },
+                { "delaysync", 1 }, { "delay", 9, true }, { "echo", 0.3f }, { "feedback", 0.4f },
+                { "revmix", 0.35f }, { "revsize", 0.7f } } },
+            { "tape bass", "hello", {
+                { "wave", 1 }, { "poly", 0 }, { "width", 0.5f }, { "srcglide", 0.08f },
+                { "subwave", 0 }, { "subtune", -12.f }, { "sublevel", 0.8f },
+                { "attacksync", 0 }, { "decaysync", 0 }, { "releasesync", 0 },
+                { "attack", 0.004f }, { "decay", 0.3f }, { "sustain", 0.7f }, { "release", 0.15f },
+                { "subattacksync", 0 }, { "subattack", 0.004f }, { "subdecay", 0.3f }, { "subsustain", 0.7f }, { "subrelease", 0.15f },
+                { "filttype", 1 }, { "filtcut", 900.f }, { "filtq", 1.2f }, { "fenv", 0.6f }, { "fdecay", 0.25f },
+                { "limitdist", 0.2f } } },
+            { "crushed keys", "hello", {
+                { "wave", 3 }, { "width", 0.35f }, { "bits", 6.f }, { "hold", 4.f }, { "crushmix", 0.6f },
+                { "attack", 1, true }, { "decay", 10, true }, { "sustain", 0.4f }, { "release", 7, true },
+                { "subattack", 1, true }, { "subdecay", 10, true }, { "subsustain", 0.4f }, { "subrelease", 7, true },
+                { "filttype", 1 }, { "filtcut", 3500.f }, { "filtq", 0.9f },
+                { "delaysync", 1 }, { "delay", 9, true }, { "echo", 0.35f }, { "feedback", 0.45f } } },
+            { "warble pad", "hello", {
+                { "wave", 4 }, { "subwave", 4 }, { "sublevel", 0.5f },
+                { "scatmode", 0 }, { "scatter", 0.25f }, { "wobrate", 0.6f }, { "scatglide", 0.4f },
+                { "attack", 13, true }, { "decay", 13, true }, { "sustain", 0.8f }, { "release", 15, true },
+                { "subattack", 13, true }, { "subrelease", 15, true },
+                { "filttype", 1 }, { "filtcut", 1800.f }, { "filtq", 2.f },
+                { "lfo1dest", 1 }, { "lfo1depth", 0.3f }, { "lfo1rate", 0.25f },
+                { "revmix", 0.5f }, { "revsize", 0.8f }, { "revdamp", 0.3f } } },
+            { "robot says", "null glitch", {
+                { "wave", 6 }, { "sublevel", 0.3f }, { "subwave", 0 },
+                { "sampitch", 64.f }, { "samspeed", 72.f },
+                { "attack", 1, true }, { "release", 10, true }, { "subattack", 1, true }, { "subrelease", 10, true },
+                { "bits", 8.f }, { "crushmix", 0.5f },
+                { "delaysync", 1 }, { "delay", 10, true }, { "echo", 0.25f }, { "feedback", 0.3f } } },
+            { "stutter repeat", "hello", {
+                { "wave", 2 }, { "scatmode", 1 }, { "steps", 4.f }, { "scatter", 0.6f },
+                { "slowsync", 1 }, { "slow", 0.6f },
+                { "bits", 10.f }, { "crushmix", 0.4f },
+                { "attack", 1, true }, { "decay", 10, true }, { "sustain", 0.6f }, { "release", 7, true },
+                { "subattack", 1, true }, { "subrelease", 7, true },
+                { "delaysync", 1 }, { "delay", 4, true }, { "echo", 0.3f }, { "feedback", 0.35f } } },
+            { "noise hat", "hello", {
+                { "wave", 5 }, { "submode", 0 }, { "sublevel", 0.f },
+                { "attacksync", 0 }, { "decaysync", 0 }, { "releasesync", 0 },
+                { "attack", 0.001f }, { "decay", 0.08f }, { "sustain", 0.f }, { "release", 0.05f },
+                { "filttype", 2 }, { "filtcut", 6000.f }, { "filtq", 0.8f },
+                { "level", 0.f } } },
+        };
+        return table;
+    }
+}
+
+int ClicksProcessor::getNumPrograms()
+{
+    return (int) factoryPresets().size();
+}
+
+const juce::String ClicksProcessor::getProgramName (int index)
+{
+    const auto& table = factoryPresets();
+    if (index < 0 || index >= (int) table.size())
+        return {};
+    return index == 0 ? juce::String ("init") : juce::String (table[(size_t) index].name);
+}
+
+// Hosts may call this from the audio thread, and some call it again with
+// the saved index after a session restore. Only a change is applied, and
+// always on the message thread.
+void ClicksProcessor::setCurrentProgram (int index)
+{
+    if (index < 0 || index >= getNumPrograms() || index == currentProgram.load())
+        return;
+    if (juce::MessageManager::getInstance()->isThisTheMessageThread())
+    {
+        applyFactoryPreset (index);
+        return;
+    }
+    wantedProgram.store (index);
+    triggerAsyncUpdate();
+}
+
+void ClicksProcessor::handleAsyncUpdate()
+{
+    const int index = wantedProgram.exchange (-1);
+    if (index >= 0)
+        applyFactoryPreset (index);
+}
+
+void ClicksProcessor::applyFactoryPreset (int index)
+{
+    const auto& table = factoryPresets();
+    if (index < 0 || index >= (int) table.size())
+        return;
+    const auto& preset = table[(size_t) index];
+    for (auto* param : getParameters())
+        if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (param))
+            ranged->setValueNotifyingHost (ranged->getDefaultValue());
+    for (const auto& step : preset.steps)
+    {
+        auto* param = apvts.getParameter (step.id);
+        jassert (param != nullptr);
+        if (param == nullptr)
+            continue;
+        const float norm = step.division
+            ? juce::jlimit (0.f, 1.f, step.value / (float) (ClickParams::divisionCount() - 1))
+            : param->convertTo0to1 (step.value);
+        param->setValueNotifyingHost (norm);
+    }
+    setSamText (preset.say);
+    apvts.state.setProperty ("preset", preset.name, nullptr);
+    apvts.state.setProperty ("program", index, nullptr);
+    currentProgram.store (index);
+    requestSpeech();
+    // With the panel closed nothing polls the request, so render the word here.
+    if (getActiveEditor() == nullptr)
+        lockSpeech (false);
+    updateHostDisplay (ChangeDetails().withProgramChanged (true));
+}
+
 void ClicksProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     saveMidiMapToState();
@@ -480,10 +644,7 @@ void ClicksProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
-        {
             replacePluginState (*xml);
-            loadMidiMapFromState();
-        }
 }
 
 void ClicksProcessor::armMidiLearn (const juce::String& paramId)
@@ -492,12 +653,25 @@ void ClicksProcessor::armMidiLearn (const juce::String& paramId)
         return;
     const juce::ScopedLock lock (midiMapLock);
     pendingLearnParam = paramId;
+    learnArmed.store (true, std::memory_order_release);
 }
 
 void ClicksProcessor::cancelMidiLearn()
 {
     const juce::ScopedLock lock (midiMapLock);
     pendingLearnParam.clear();
+    learnArmed.store (false, std::memory_order_release);
+}
+
+// Call with midiMapLock held.
+void ClicksProcessor::rebuildCcTargets()
+{
+    for (int cc = 0; cc < 128; ++cc)
+    {
+        const auto& id = midiCcToParam[(size_t) cc];
+        ccTarget[(size_t) cc].store (id.isEmpty() ? nullptr : apvts.getParameter (id),
+                                     std::memory_order_release);
+    }
 }
 
 bool ClicksProcessor::isMidiLearning() const
@@ -521,10 +695,13 @@ juce::String ClicksProcessor::paramNameForId (const juce::String& paramId) const
 
 void ClicksProcessor::clearMidiMappingForParam (const juce::String& paramId)
 {
-    const juce::ScopedLock lock (midiMapLock);
-    for (auto& id : midiCcToParam)
-        if (id == paramId)
-            id.clear();
+    {
+        const juce::ScopedLock lock (midiMapLock);
+        for (auto& id : midiCcToParam)
+            if (id == paramId)
+                id.clear();
+        rebuildCcTargets();
+    }
     saveMidiMapToState();
 }
 
@@ -537,16 +714,8 @@ int ClicksProcessor::midiCcForParam (const juce::String& paramId) const
     return -1;
 }
 
-void ClicksProcessor::applyMidiController (int cc, int value)
+void ClicksProcessor::applyMidiController (juce::RangedAudioParameter* param, int value)
 {
-    juce::String paramId;
-    {
-        const juce::ScopedLock lock (midiMapLock);
-        paramId = midiCcToParam[(size_t) cc];
-    }
-    if (paramId.isEmpty())
-        return;
-    auto* param = apvts.getParameter (paramId);
     if (param == nullptr)
         return;
     const float norm = juce::jlimit (0.f, 1.f, (float) value / 127.f);
@@ -555,40 +724,43 @@ void ClicksProcessor::applyMidiController (int cc, int value)
     param->endChangeGesture();
 }
 
+// Audio thread. The plain path is one atomic load. Learning is the rare
+// path and takes the lock once. The state tree is written later, on the
+// message thread, by takeMidiLearnNotice or getStateInformation.
 bool ClicksProcessor::handleMidiController (int cc, int value)
 {
-    juce::String learned;
+    if (cc < 0 || cc >= 128)
+        return false;
+    if (learnArmed.load (std::memory_order_acquire))
     {
-        const juce::ScopedLock lock (midiMapLock);
-        if (pendingLearnParam.isNotEmpty())
-        {
-            for (auto& id : midiCcToParam)
-                if (id == pendingLearnParam)
-                    id.clear();
-            midiCcToParam[(size_t) cc] = pendingLearnParam;
-            learned = pendingLearnParam;
-            pendingLearnParam.clear();
-        }
-    }
-    if (learned.isNotEmpty())
-    {
-        saveMidiMapToState();
+        juce::RangedAudioParameter* learned = nullptr;
         {
             const juce::ScopedLock lock (midiMapLock);
-            learnNotifyParam = learned;
+            if (pendingLearnParam.isNotEmpty())
+            {
+                for (auto& id : midiCcToParam)
+                    if (id == pendingLearnParam)
+                        id.clear();
+                midiCcToParam[(size_t) cc] = pendingLearnParam;
+                learnNotifyParam = pendingLearnParam;
+                pendingLearnParam.clear();
+                learnArmed.store (false, std::memory_order_release);
+                rebuildCcTargets();
+                learned = ccTarget[(size_t) cc].load (std::memory_order_acquire);
+            }
         }
-        learnNotifyCc.store (cc);
-        applyMidiController (cc, value);
-        return true;
+        if (learned != nullptr)
+        {
+            mapDirty.store (true, std::memory_order_release);
+            learnNotifyCc.store (cc);
+            applyMidiController (learned, value);
+            return true;
+        }
     }
-    juce::String mapped;
-    {
-        const juce::ScopedLock lock (midiMapLock);
-        mapped = midiCcToParam[(size_t) cc];
-    }
-    if (mapped.isEmpty())
+    auto* mapped = ccTarget[(size_t) cc].load (std::memory_order_acquire);
+    if (mapped == nullptr)
         return false;
-    applyMidiController (cc, value);
+    applyMidiController (mapped, value);
     return true;
 }
 
@@ -609,10 +781,14 @@ void ClicksProcessor::loadMidiMapFromState()
         if (id.isNotEmpty() && apvts.getParameter (id) != nullptr)
             midiCcToParam[(size_t) cc] = id;
     }
+    learnArmed.store (false, std::memory_order_release);
+    rebuildCcTargets();
 }
 
 int ClicksProcessor::takeMidiLearnNotice (juce::String& paramIdOut)
 {
+    if (mapDirty.exchange (false))
+        saveMidiMapToState();
     const int cc = learnNotifyCc.exchange (-1);
     if (cc < 0)
         return -1;
@@ -622,8 +798,10 @@ int ClicksProcessor::takeMidiLearnNotice (juce::String& paramIdOut)
     return cc;
 }
 
+// Message thread only. It writes the state tree.
 void ClicksProcessor::saveMidiMapToState()
 {
+    mapDirty.store (false);
     const juce::ScopedLock lock (midiMapLock);
     for (int i = apvts.state.getNumProperties() - 1; i >= 0; --i)
     {
@@ -744,7 +922,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClicksProcessor::createLayou
         NormalisableRange<float> (0.f, 2.f, 0.001f), 0.f, seconds));
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { "wobrate", 1 }, "Warble rate",
-        NormalisableRange<float> (0.15f, 8.f, 0.01f, 0.45f), 1.2f,
+        NormalisableRange<float> (0.1f, 30.f, 0.01f, 0.35f), 1.2f,
         AudioParameterFloatAttributes().withAutomatable (true).withLabel ("Hz")));
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { "srcglide", 1 }, "Source glide",

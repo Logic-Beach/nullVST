@@ -3,8 +3,16 @@ project(NullGlitch VERSION 1.1.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "" FORCE)
-set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "" FORCE)
+# macOS defaults. A -D on the command line wins, so one build can be Intel,
+# Apple Silicon, or both. Other platforms ignore these.
+if(APPLE)
+    if(NOT CMAKE_OSX_ARCHITECTURES)
+        set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "" FORCE)
+    endif()
+    if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "" FORCE)
+    endif()
+endif()
 
 include(FetchContent)
 FetchContent_Declare(
@@ -89,8 +97,13 @@ endif()
 
 set(ESPEAK_CONFIG_DIR ${CMAKE_BINARY_DIR}/espeak-config)
 file(MAKE_DIRECTORY ${ESPEAK_CONFIG_DIR})
+if(WIN32)
+    set(ESPEAK_MKSTEMP 0)
+else()
+    set(ESPEAK_MKSTEMP 1)
+endif()
 file(WRITE ${ESPEAK_CONFIG_DIR}/config.h
-"#define HAVE_MKSTEMP 1
+"#define HAVE_MKSTEMP ${ESPEAK_MKSTEMP}
 #define USE_ASYNC 0
 #define USE_KLATT 1
 #define USE_LIBPCAUDIO 0
@@ -138,7 +151,14 @@ set(ESPEAK_SOURCES
     ${espeakng_SOURCE_DIR}/src/ucd-tools/src/tostring.c)
 
 add_library(espeak_static STATIC ${ESPEAK_SOURCES})
-set_source_files_properties(${ESPEAK_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
+if(MSVC)
+    set_source_files_properties(${ESPEAK_SOURCES} PROPERTIES COMPILE_FLAGS "/w")
+else()
+    set_source_files_properties(${ESPEAK_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
+endif()
+if(UNIX AND NOT APPLE)
+    target_link_libraries(espeak_static PUBLIC m)
+endif()
 target_include_directories(espeak_static BEFORE PRIVATE
     ${ESPEAK_CONFIG_DIR}
     ${espeakng_SOURCE_DIR}/src/include
@@ -191,7 +211,11 @@ add_custom_target(espeak_data DEPENDS
     ${ESPEAK_DATA_DIR}/en_dict)
 add_dependencies(NullGlitch_VST3 espeak_data)
 
-set_source_files_properties(${SAM_SRC} PROPERTIES COMPILE_FLAGS "-w -fcommon")
+if(MSVC)
+    set_source_files_properties(${SAM_SRC} PROPERTIES COMPILE_FLAGS "/w")
+else()
+    set_source_files_properties(${SAM_SRC} PROPERTIES COMPILE_FLAGS "-w -fcommon")
+endif()
 
 target_include_directories(NullGlitch PRIVATE
     third_party/SAM/src

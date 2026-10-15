@@ -17,6 +17,21 @@ public:
 
 private:
     void timerCallback() override;
+    // Dark mode. The whole face is drawn as usual, then every pixel is
+    // inverted: paint() through paintInverted(), each child through an
+    // image effect. See applyTheme().
+    struct Invert : public juce::ImageEffectFilter
+    {
+        void applyEffect (juce::Image&, juce::Graphics&, float scale, float alpha) override;
+    };
+    Invert invert;
+    bool dark = false;
+    juce::Image darkPlate;
+    std::unique_ptr<juce::PropertiesFile> prefs;
+    juce::TextButton darkButton;
+    void applyTheme();
+    void paintFace (juce::Graphics&);
+    void paintInverted (juce::Graphics&);
     void tryMidiLearnFrom (juce::Component* target, const juce::MouseEvent& event);
     void showNote (const juce::String&);
     void refreshScope();
@@ -101,6 +116,8 @@ private:
     juce::TooltipWindow tips;
     juce::Image field;
     juce::Image grain;
+    juce::Image backdrop;
+    void bakeBackdrop();
     juce::Image mark;
     juce::Image logoPlate;
     juce::Image botPlate;
@@ -123,9 +140,14 @@ private:
     juce::TextButton initButton;
     juce::TextButton saveButton;
     juce::TextButton loadButton;
+    juce::TextButton prevButton;
+    juce::TextButton nextButton;
     juce::Label presetBox;
     juce::String presetName;
     void showPreset();
+    void stepPreset (int delta);
+    void choosePreset (int index);
+    void showPresetMenu();
     juce::TextButton lockButton;
     juce::ToggleButton syncTick;
     juce::ToggleButton pitchTick;
@@ -218,6 +240,8 @@ private:
     juce::Rectangle<int> subHoldPlate;
     juce::Rectangle<int> filtHoldPlate;
     juce::Label outMeter;
+    int filtTypeShown = -1;
+    int waveShown = -1;
     float meterShown = 0.f;
     float meterHold = 0.f;
     int meterHoldAge = 0;
