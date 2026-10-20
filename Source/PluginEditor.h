@@ -17,22 +17,8 @@ public:
 
 private:
     void timerCallback() override;
-    // Dark mode. The whole face is drawn as usual, then every pixel is
-    // inverted: paint() through paintInverted(), each child through an
-    // image effect. See applyTheme().
-    struct Invert : public juce::ImageEffectFilter
-    {
-        void applyEffect (juce::Image&, juce::Graphics&, float scale, float alpha) override;
-    };
-    Invert invert;
-    bool dark = false;
-    juce::Image darkPlate;
-    std::unique_ptr<juce::PropertiesFile> prefs;
-    juce::TextButton darkButton;
-    void applyTheme();
     void paintFace (juce::Graphics&);
     void paintShadows (juce::Graphics&);
-    void paintInverted (juce::Graphics&);
     void tryMidiLearnFrom (juce::Component* target, const juce::MouseEvent& event);
     void showNote (const juce::String&);
     void refreshScope();
@@ -132,6 +118,7 @@ private:
     std::vector<std::unique_ptr<Knob>> output;
     std::vector<std::unique_ptr<Knob>> env;
     std::vector<std::unique_ptr<Knob>> senv;
+    std::vector<std::unique_ptr<Knob>> sublp;
     std::vector<std::unique_ptr<Knob>> fenv;
     std::vector<std::unique_ptr<Knob>> fenv2;
     std::vector<std::unique_ptr<Knob>> comp;
@@ -168,6 +155,7 @@ private:
     juce::ToggleButton f2AttackSync;
     juce::ToggleButton f2DecaySync;
     juce::ToggleButton f2ReleaseSync;
+    juce::ToggleButton subOrderTick;
     juce::ToggleButton subAttackSync;
     juce::ToggleButton subDecaySync;
     juce::ToggleButton subReleaseSync;
@@ -187,6 +175,7 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> f2AttackSyncAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> f2DecaySyncAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> f2ReleaseSyncAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> subOrderAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> subAttackSyncAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> subDecaySyncAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> subReleaseSyncAttachment;

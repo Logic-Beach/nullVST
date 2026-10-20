@@ -105,12 +105,15 @@ struct ClickParams
     float decay = 0.12f;
     float sustain = 0.85f;
     float release = 0.1f;
-    int subMode = 0;     // 0 off, 1 add, 2 subtract, 3 multiply, 4 divide, 5 AM, 6 FM, 7 min, 8 max
+    int subMode = 0;     // 0 off, 1 add, 2 subtract, 3 multiply, 4 divide, 5 AM, 6 FM, 7 min, 8 max, 9 fold, 10 xor, 11 diff
     int subWave = 0;     // 0 sine, 1 square, 2 saw up, 3 saw down, 4 triangle
     float subTune = -12.f; // semitones from the key
     float subFine = 0.f; // cents on top of subTune. 0 is the semitone
     float subMix = 0.f;  // 0 dry
     float subWidth = 0.5f; // pulse width of the sub. 0.5 is the plain shape
+    int subOrder = 0;    // 0 the math lands on the source. 1 it lands on the sub
+    float subCut = 16000.f; // low pass on the sub. Open leaves the sub as it is
+    float subReso = 0.7f;   // how hard that low pass rings
     float subAttack = 0.01f;
     float subDecay = 0.12f;
     float subSustain = 0.85f;
@@ -495,6 +498,10 @@ public:
         voice->phase = 0;
         voice->phase2 = 0;
         voice->subPhase = 0;
+        voice->subIc1 = 0.f;
+        voice->subIc2 = 0.f;
+        voice->subCut = std::clamp (params.subCut, 40.f, 16000.f);
+        voice->subQ = std::clamp (params.subReso, 0.3f, 8.f);
 
         const uint32_t userSeed = (uint32_t) std::lround (std::clamp (params.seed, 0.f, 999.f));
         const uint32_t seed = ((uint32_t) note * 1315423911u)
@@ -575,6 +582,7 @@ public:
             + filtPlace * 3
             + fxOrder * 17
             + mix.subMode * 19
+            + mix.subOrder * 71
             + mix.subWave * 23
             + mix.pitchFix * 29
             + (int) std::lround (mix.bits) * 31
@@ -732,13 +740,19 @@ public:
                 const float slowNow = std::clamp (mix.slow, 0.05f, 4.f);
                 const int subMode = mix.subMode;
                 const float depth = subMixNow;
-                const bool subOn = subMode > 0 && depth > 0.0001f;
+                const bool ontoSub = mix.subOrder != 0;
+                // Mix is how hard the other signal is applied. Zero plays the
+                // carrier dry. On the sub side the carrier is the sub, so a
+                // chosen mode still sounds with the mix all the way down.
+                const bool subOn = subMode > 0 && (depth > 0.0001f || ontoSub);
                 float rateMul = 1.f;
                 float sub = 0.f;
-                if (subOn)
+                // FM that lands on the sub needs the source sample first.
+                if (subOn && ! (ontoSub && subMode == 6))
                 {
                     sub = subOsc (voice, slowNow) * advanceSubEnv (voice);
                     sub *= subLvlNow;
+                    sub = subLowpass (voice, sub);
                     if (subMode == 6)
                         rateMul = std::clamp (1.f + sub * depth * 3.f, 0.08f, 6.f);
                 }
@@ -763,6 +777,14 @@ public:
                     }
                 s *= srcNow;
                 const float env = advanceEnv (voice);
+                if (subOn && ontoSub && subMode == 6)
+                {
+                    // The source oscillator is half scale. Times two matches the sub's FM depth.
+                    const float bend = std::clamp (1.f + (s * 2.f) * env * depth * 3.f, 0.08f, 6.f);
+                    sub = subOsc (voice, slowNow * bend) * advanceSubEnv (voice);
+                    sub *= subLvlNow;
+                    sub = subLowpass (voice, sub);
+                }
                 if (! voice.active && subOn && voice.subEnv > 0.0008f)
                     voice.active = true;
                 if (! voice.active)
@@ -770,12 +792,24 @@ public:
                 // Sub off: crush, then the source envelope. That order is the
                 // dry path. Sub on: the source envelope shapes the source, the
                 // sub envelope already shaped the sub, then crush hits the mix.
-                // Orders that crush the mix skip degrade here and do it later.
+                // Order flips which one the math lands on. FM bends that one
+                // and the other stays the modulator. Orders that crush the mix
+                // skip degrade here and do it later.
+                auto applySub = [&] (float source)
+                {
+                    if (! subOn || subMode == 6)
+                        return (subOn && ontoSub && subMode == 6) ? sub * 0.5f : source;
+                    // The sub oscillator is full scale and the source is half.
+                    // Halve the sub and double the source so the same formula
+                    // hears both directions at the same level.
+                    if (ontoSub)
+                        return shapeSub (sub * 0.5f, source * 2.f, subMode, depth);
+                    return shapeSub (source, sub, subMode, depth);
+                };
                 if (! crushOnVoice)
                 {
                     s *= env;
-                    if (subOn && subMode != 6)
-                        s = shapeSub (s, sub, subMode, depth);
+                    s = applySub (s);
                 }
                 else if (! subOn)
                 {
@@ -786,8 +820,7 @@ public:
                 else
                 {
                     s *= env;
-                    if (subMode != 6)
-                        s = shapeSub (s, sub, subMode, depth);
+                    s = applySub (s);
                     const float dry = s;
                     s = degrade (voice, s);
                     s = dry + (s - dry) * crushNow;
@@ -1053,6 +1086,7 @@ public:
         return lfoVis[(size_t) index].load (std::memory_order_relaxed);
     }
     double engineSampleRate() const { return sampleRate; }
+    bool ready() const { return cap >= 16; }
 
 private:
     struct Rng
@@ -1138,6 +1172,10 @@ private:
         double phase = 0;
         double phase2 = 0;
         double subPhase = 0;
+        float subIc1 = 0.f;
+        float subIc2 = 0.f;
+        float subCut = 16000.f;
+        float subQ = 0.7f;
         uint32_t oscNoise = 1;
         int beatCell = -100000;
         int scatStep = -100000;
@@ -1261,6 +1299,38 @@ private:
         }
     }
 
+    // Low pass on the sub sample. Fully open returns the sample unchanged.
+    float subLowpass (Voice& voice, float x)
+    {
+        const float target = std::clamp (mix.subCut, 40.f, 16000.f);
+        const float targetQ = std::clamp (mix.subReso, 0.3f, 8.f);
+        voice.subCut += 0.01f * (target - voice.subCut);
+        voice.subQ += 0.01f * (targetQ - voice.subQ);
+        if (sampleRate < 1000.0 || (target >= 15900.f && voice.subCut >= 15900.f))
+        {
+            voice.subIc1 = 0.f;
+            voice.subIc2 = 0.f;
+            return x;
+        }
+        const float g = std::tan (3.14159265f * voice.subCut / (float) sampleRate);
+        const float k = 1.f / std::max (0.3f, voice.subQ);
+        const float a1 = 1.f / (1.f + g * (g + k));
+        const float a2 = g * a1;
+        const float a3 = g * a2;
+        const float v3 = x - voice.subIc2;
+        const float v1 = a1 * voice.subIc1 + a2 * v3;
+        const float v2 = voice.subIc2 + a2 * voice.subIc1 + a3 * v3;
+        voice.subIc1 = 2.f * v1 - voice.subIc1;
+        voice.subIc2 = 2.f * v2 - voice.subIc2;
+        if (! std::isfinite (v2))
+        {
+            voice.subIc1 = 0.f;
+            voice.subIc2 = 0.f;
+            return 0.f;
+        }
+        return std::clamp (v2, -4.f, 4.f);
+    }
+
     // Second oscillator, tuned in semitones from the note. FM uses it as a
     // rate bend. The other modes mix the sample in shapeSub().
     float subOsc (Voice& voice, float slowNow)
@@ -1299,6 +1369,35 @@ private:
             case 5: out = s * (1.f + depth * sub) / (1.f + depth); break;
             case 7: out = s + (std::min (s, m) - s) * depth; break;
             case 8: out = s + (std::max (s, m) - s) * depth; break;
+            case 9:
+            {
+                float y = s * (1.f + depth * std::abs (sub) * 4.f);
+                for (int n = 0; n < 4; ++n)
+                {
+                    if (y > 1.f)       y = 2.f - y;
+                    else if (y < -1.f) y = -2.f - y;
+                }
+                out = y;
+                break;
+            }
+            case 10:
+            {
+                auto bits = [] (float v)
+                {
+                    const float u = std::clamp (v, -1.f, 1.f) * 0.5f + 0.5f;
+                    return (int) std::lround (u * 255.f) & 255;
+                };
+                const float mixed = (float) (bits (s * 2.f) ^ bits (sub));
+                const float y = ((mixed / 255.f) * 2.f - 1.f) * 0.5f;
+                out = s + (y - s) * depth;
+                break;
+            }
+            case 11:
+            {
+                const float y = std::copysign (std::abs (s - sub), s);
+                out = s + (y - s) * depth;
+                break;
+            }
             default: break;
         }
         return std::clamp (out, -1.5f, 1.5f);

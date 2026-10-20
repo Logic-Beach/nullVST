@@ -5,7 +5,51 @@
 
 #include <cmath>
 #include <cstdio>
+#include <mutex>
 #include <vector>
+
+struct ClicksProcessor::SpeechPump : juce::Thread
+{
+    explicit SpeechPump (ClicksProcessor& o)
+        : juce::Thread ("NullAtomo speech"), owner (o) {}
+
+    void run() override
+    {
+        while (! threadShouldExit())
+        {
+            const bool asked = owner.takeSpeechRequest();
+            const bool stale = owner.samNeedsRender();
+            if ((asked || stale) && ! threadShouldExit())
+                owner.lockSpeech (false);
+            wait (40);
+        }
+    }
+
+    ClicksProcessor& owner;
+};
+
+struct ClicksProcessor::SyncRefresh : juce::AudioProcessorParameter::Listener
+{
+    explicit SyncRefresh (ClicksProcessor& o) : owner (o) {}
+
+    ~SyncRefresh() override
+    {
+        for (auto* param : watched)
+            if (param != nullptr)
+                param->removeListener (this);
+    }
+
+    void parameterValueChanged (int, float) override
+    {
+        owner.syncInfoDirty.store (true);
+        owner.triggerAsyncUpdate();
+    }
+
+    void parameterGestureChanged (int, bool) override {}
+
+    ClicksProcessor& owner;
+    std::vector<juce::AudioProcessorParameter*> watched;
+};
 
 ClicksProcessor::ClicksProcessor()
     : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
@@ -16,12 +60,20 @@ ClicksProcessor::ClicksProcessor()
     apvts.state.setProperty ("waveid", 2, nullptr);
     apvts.state.setProperty ("sawdown", 1, nullptr);
     loadMidiMapFromState();
+    // Notes are ignored until prepare() has run. Some hosts do not call
+    // prepareToPlay until the panel opens, so be ready before the first note.
+    engine.prepare (44100.0);
     requestSpeech();
+    watchDivisions();
+    speechPump = std::make_unique<SpeechPump> (*this);
+    speechPump->startThread();
 }
 
 ClicksProcessor::~ClicksProcessor()
 {
     cancelPendingUpdate();
+    if (speechPump != nullptr)
+        speechPump->stopThread (5000);
 }
 
 void ClicksProcessor::bindTaps()
@@ -43,6 +95,8 @@ void ClicksProcessor::bindTaps()
 void ClicksProcessor::prepareToPlay (double sampleRate, int)
 {
     engine.prepare (sampleRate);
+    // The word was rendered at the fallback rate. Do it again at the host rate.
+    requestSpeech();
 }
 
 void ClicksProcessor::releaseResources()
@@ -132,6 +186,9 @@ ClickParams ClicksProcessor::readParams() const
     params.subFine = tap (tap_subfine);
     params.subMix = tap (tap_submix);
     params.subWidth = tap (tap_subwidth);
+    params.subOrder = tap (tap_suborder) > 0.5f ? 1 : 0;
+    params.subCut = tap (tap_subcut);
+    params.subReso = tap (tap_subreso);
     params.subAttack = tempoSeconds (tap_subattack, tap_subattacksync);
     params.subDecay = tempoSeconds (tap_subdecay, tap_subdecaysync);
     params.subSustain = tap (tap_subsustain);
@@ -298,6 +355,9 @@ void ClicksProcessor::replacePluginState (const juce::XmlElement& xml)
 
 juce::String ClicksProcessor::lockSpeech (bool announce)
 {
+    // The panel timer and the background pump can both arrive here.
+    static std::mutex renderLock;
+    const std::lock_guard<std::mutex> hold (renderLock);
     speechRequest.store (false, std::memory_order_release);
     const auto word = samText();
     const int wave = (int) std::lround (apvts.getRawParameterValue ("wave")->load());
@@ -471,6 +531,13 @@ void ClicksProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     // The on-screen keyboard is hidden, so the audio thread no longer feeds it.
     buffer.clear();
 
+    if (! engine.ready())
+    {
+        const double host = getSampleRate();
+        engine.prepare (host > 1000.0 ? host : 44100.0);
+        requestSpeech();
+    }
+
     const ClickParams params = readParams();
     engine.setMix (params);
 
@@ -527,7 +594,11 @@ namespace
         const char* name;
         const char* say;
         std::vector<Step> steps;
+        // A saved preset file. Applied after the knobs return to init.
+        const char* state = nullptr;
     };
+
+#include "UserFactoryPresets.inc"
 
     const std::vector<Factory>& factoryPresets()
     {
@@ -580,6 +651,7 @@ namespace
                 { "attack", 0.001f }, { "decay", 0.08f }, { "sustain", 0.f }, { "release", 0.05f },
                 { "filttype", 2 }, { "filtcut", 6000.f }, { "filtq", 0.8f },
                 { "level", 0.f } } },
+            NG_USER_FACTORY
         };
         return table;
     }
@@ -619,6 +691,8 @@ void ClicksProcessor::handleAsyncUpdate()
     const int index = wantedProgram.exchange (-1);
     if (index >= 0)
         applyFactoryPreset (index);
+    if (syncInfoDirty.exchange (false))
+        updateHostDisplay (juce::AudioProcessorListener::ChangeDetails().withParameterInfoChanged (true));
 }
 
 void ClicksProcessor::applyFactoryPreset (int index)
@@ -641,7 +715,13 @@ void ClicksProcessor::applyFactoryPreset (int index)
             : param->convertTo0to1 (step.value);
         param->setValueNotifyingHost (norm);
     }
-    setSamText (preset.say);
+    if (preset.state != nullptr)
+    {
+        if (auto xml = juce::XmlDocument::parse (juce::String (preset.state)))
+            replacePluginState (*xml);
+    }
+    else
+        setSamText (preset.say);
     apvts.state.setProperty ("preset", preset.name, nullptr);
     apvts.state.setProperty ("program", index, nullptr);
     currentProgram.store (index);
@@ -836,6 +916,90 @@ void ClicksProcessor::saveMidiMapToState()
     }
 }
 
+namespace
+{
+// A free knob until its sync flag is on. Then the host sees the 21 beat divisions.
+class DivisionParameter : public juce::AudioParameterFloat
+{
+public:
+    using juce::AudioParameterFloat::AudioParameterFloat;
+
+    void tie (std::atomic<float>* flag) { sync = flag; }
+
+    bool isDiscrete() const override
+    {
+        return sync != nullptr && sync->load (std::memory_order_relaxed) > 0.5f;
+    }
+
+    int getNumSteps() const override
+    {
+        if (isDiscrete())
+            return ClickParams::divisionCount();
+        const auto& span = getNormalisableRange();
+        if (span.interval > 0.f)
+            return (int) ((span.end - span.start) / span.interval) + 1;
+        return getDefaultNumParameterSteps();
+    }
+
+    juce::String getText (float normalised, int length) const override
+    {
+        if (isDiscrete())
+            return ClickParams::divisionName (ClickParams::divisionIndexNorm (normalised));
+        auto text = juce::String (convertFrom0to1 (normalised), 3);
+        return length > 0 ? text.substring (0, length) : text;
+    }
+
+    float getValueForText (const juce::String& text) const override
+    {
+        if (isDiscrete())
+        {
+            for (int i = 0; i < ClickParams::divisionCount(); ++i)
+                if (text.equalsIgnoreCase (ClickParams::divisionName (i)))
+                    return (float) i / (float) (ClickParams::divisionCount() - 1);
+        }
+        return convertTo0to1 (text.getFloatValue());
+    }
+
+private:
+    std::atomic<float>* sync = nullptr;
+};
+}
+
+void ClicksProcessor::watchDivisions()
+{
+    static const char* pairs[][2] = {
+        { "slow", "slowsync" },
+        { "delay", "delaysync" },
+        { "attack", "attacksync" },
+        { "decay", "decaysync" },
+        { "release", "releasesync" },
+        { "subattack", "subattacksync" },
+        { "subdecay", "subdecaysync" },
+        { "subrelease", "subreleasesync" },
+        { "fattack", "fattacksync" },
+        { "fdecay", "fdecaysync" },
+        { "frelease", "freleasesync" },
+        { "f2attack", "f2attacksync" },
+        { "f2decay", "f2decaysync" },
+        { "f2release", "f2releasesync" },
+        { "lfo1rate", "lfo1sync" },
+        { "lfo2rate", "lfo2sync" },
+        { "lfo3rate", "lfo3sync" },
+        { "lfo4rate", "lfo4sync" },
+    };
+    syncRefresh = std::make_unique<SyncRefresh> (*this);
+    for (const auto& pair : pairs)
+    {
+        if (auto* value = dynamic_cast<DivisionParameter*> (apvts.getParameter (pair[0])))
+            value->tie (apvts.getRawParameterValue (pair[1]));
+        if (auto* sync = apvts.getParameter (pair[1]))
+        {
+            sync->addListener (syncRefresh.get());
+            syncRefresh->watched.push_back (sync);
+        }
+    }
+}
+
 juce::AudioProcessorValueTreeState::ParameterLayout ClicksProcessor::createLayout()
 {
     using namespace juce;
@@ -862,7 +1026,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClicksProcessor::createLayou
     layout.add (std::make_unique<AudioParameterChoice> (
         ParameterID { "submode", 1 },
         "Sub",
-        StringArray { "Off", "Add", "Subtract", "Multiply", "Divide", "AM", "FM", "Min", "Max" },
+        StringArray { "Off", "Add", "Subtract", "Multiply", "Divide", "AM", "FM", "Min", "Max", "Fold", "Xor", "Diff" },
         1,
         choice));
     layout.add (std::make_unique<AudioParameterChoice> (
@@ -912,7 +1076,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClicksProcessor::createLayou
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { "limitdist", 1 }, "Dist",
         NormalisableRange<float> (0.f, 1.f, 0.01f), 0.f, live));
-    layout.add (std::make_unique<AudioParameterFloat> (
+    layout.add (std::make_unique<DivisionParameter> (
         ParameterID { "slow", 1 }, "Speed",
         NormalisableRange<float> (0.25f, 1.25f, 0.01f), 1.f, live));
     layout.add (std::make_unique<AudioParameterBool> (
@@ -949,7 +1113,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClicksProcessor::createLayou
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { "srcglide", 1 }, "Source glide",
         NormalisableRange<float> (0.f, 2.f, 0.001f), 0.f, seconds));
-    layout.add (std::make_unique<AudioParameterFloat> (
+    layout.add (std::make_unique<DivisionParameter> (
         ParameterID { "delay", 1 }, "Delay",
         NormalisableRange<float> (0.f, 1.f, 0.001f), 0.f, seconds));
     layout.add (std::make_unique<AudioParameterBool> (
@@ -1029,16 +1193,16 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClicksProcessor::createLayou
         ParameterID { "resostack", 1 }, "Stack",
         NormalisableRange<float> (0.f, 1.f, 0.01f), 0.f, live));
     const auto timeRange = NormalisableRange<float> (0.001f, 4.f, 0.001f, 0.35f);
-    layout.add (std::make_unique<AudioParameterFloat> (
+    layout.add (std::make_unique<DivisionParameter> (
         ParameterID { "fattack", 1 }, "Filter attack",
         timeRange, 0.01f, seconds));
-    layout.add (std::make_unique<AudioParameterFloat> (
+    layout.add (std::make_unique<DivisionParameter> (
         ParameterID { "fdecay", 1 }, "Filter decay",
         timeRange, 0.18f, seconds));
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { "fsustain", 1 }, "Filter sustain",
         NormalisableRange<float> (0.f, 1.f, 0.01f), 0.f, live));
-    layout.add (std::make_unique<AudioParameterFloat> (
+    layout.add (std::make_unique<DivisionParameter> (
         ParameterID { "frelease", 1 }, "Filter release",
         timeRange, 0.2f, seconds));
     layout.add (std::make_unique<AudioParameterFloat> (
@@ -1104,16 +1268,16 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClicksProcessor::createLayou
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { "compmix", 1 }, "Compress",
         NormalisableRange<float> (0.f, 1.f, 0.01f), 1.f, live));
-    layout.add (std::make_unique<AudioParameterFloat> (
+    layout.add (std::make_unique<DivisionParameter> (
         ParameterID { "attack", 1 }, "Attack",
         timeRange, 0.2f, seconds));
-    layout.add (std::make_unique<AudioParameterFloat> (
+    layout.add (std::make_unique<DivisionParameter> (
         ParameterID { "decay", 1 }, "Decay",
         timeRange, 0.2f, seconds));
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { "sustain", 1 }, "Sustain",
         NormalisableRange<float> (0.f, 1.f, 0.01f), 0.85f, live));
-    layout.add (std::make_unique<AudioParameterFloat> (
+    layout.add (std::make_unique<DivisionParameter> (
         ParameterID { "release", 1 }, "Release",
         timeRange, 0.2f, seconds));
     layout.add (std::make_unique<AudioParameterBool> (
@@ -1125,16 +1289,16 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClicksProcessor::createLayou
     layout.add (std::make_unique<AudioParameterBool> (
         ParameterID { "releasesync", 1 }, "Release sync", true,
         AudioParameterBoolAttributes().withAutomatable (true)));
-    layout.add (std::make_unique<AudioParameterFloat> (
+    layout.add (std::make_unique<DivisionParameter> (
         ParameterID { "subattack", 1 }, "Sub attack",
         timeRange, 1.759f, seconds));
-    layout.add (std::make_unique<AudioParameterFloat> (
+    layout.add (std::make_unique<DivisionParameter> (
         ParameterID { "subdecay", 1 }, "Sub decay",
         timeRange, 0.12f, seconds));
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { "subsustain", 1 }, "Sub sustain",
         NormalisableRange<float> (0.f, 1.f, 0.01f), 0.85f, live));
-    layout.add (std::make_unique<AudioParameterFloat> (
+    layout.add (std::make_unique<DivisionParameter> (
         ParameterID { "subrelease", 1 }, "Sub release",
         timeRange, 0.28f, seconds));
     layout.add (std::make_unique<AudioParameterBool> (
@@ -1157,7 +1321,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClicksProcessor::createLayou
             StringArray { "Sine", "Triangle", "Saw up", "Saw down", "Square", "Hold" },
             0,
             choice));
-        layout.add (std::make_unique<AudioParameterFloat> (
+        layout.add (std::make_unique<DivisionParameter> (
             ParameterID { "lfo" + n + "rate", 1 }, "LFO " + n + " rate",
             lfoRate, lfoRateDefault[i - 1], hertz));
         layout.add (std::make_unique<AudioParameterBool> (
@@ -1212,16 +1376,16 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClicksProcessor::createLayou
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { "reso2stack", 1 }, "Filter 2 stack",
         NormalisableRange<float> (0.f, 1.f, 0.01f), 0.f, live));
-    layout.add (std::make_unique<AudioParameterFloat> (
+    layout.add (std::make_unique<DivisionParameter> (
         ParameterID { "f2attack", 1 }, "Filter 2 attack",
         timeRange, 0.01f, seconds));
-    layout.add (std::make_unique<AudioParameterFloat> (
+    layout.add (std::make_unique<DivisionParameter> (
         ParameterID { "f2decay", 1 }, "Filter 2 decay",
         timeRange, 0.18f, seconds));
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { "f2sustain", 1 }, "Filter 2 sustain",
         NormalisableRange<float> (0.f, 1.f, 0.01f), 0.f, live));
-    layout.add (std::make_unique<AudioParameterFloat> (
+    layout.add (std::make_unique<DivisionParameter> (
         ParameterID { "f2release", 1 }, "Filter 2 release",
         timeRange, 0.2f, seconds));
     layout.add (std::make_unique<AudioParameterFloat> (
@@ -1239,6 +1403,15 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClicksProcessor::createLayou
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { "filt2mix", 1 }, "Filter 2",
         NormalisableRange<float> (0.f, 1.f, 0.01f), 1.f, live));
+    layout.add (std::make_unique<AudioParameterBool> (
+        ParameterID { "suborder", 1 }, "Sub order", false,
+        AudioParameterBoolAttributes().withAutomatable (true)));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "subcut", 1 }, "Sub cut",
+        NormalisableRange<float> (40.f, 16000.f, 1.f, 0.3f), 16000.f, hertz));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "subreso", 1 }, "Sub reso",
+        NormalisableRange<float> (0.3f, 8.f, 0.01f), 0.7f, live));
     return layout;
 }
 

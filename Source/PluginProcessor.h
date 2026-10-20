@@ -2,6 +2,7 @@
 
 #include "ClicksEngine.h"
 #include <array>
+#include <memory>
 #include <juce_audio_processors/juce_audio_processors.h>
 
 class ClicksProcessor : public juce::AudioProcessor,
@@ -91,7 +92,8 @@ private:
     X(filt2type) X(filt2cut) X(filt2q) \
     X(form2shift) X(form2spread) X(form2breath) X(reso2damp) X(reso2tune) X(reso2stack) \
     X(f2attack) X(f2attacksync) X(f2decay) X(f2decaysync) X(f2sustain) X(f2release) X(f2releasesync) X(f2env) \
-    X(filt2mix)
+    X(filt2mix) \
+    X(suborder) X(subcut) X(subreso)
     enum Tap
     {
 #define NG_TAP_ENUM(n) tap_##n,
@@ -146,6 +148,15 @@ private:
     std::atomic<bool> mapDirty { false };
     std::atomic<int> learnNotifyCc { -1 };
     juce::String learnNotifyParam;
+    struct SyncRefresh;
+    std::unique_ptr<SyncRefresh> syncRefresh;
+    std::atomic<bool> syncInfoDirty { false };
+    void watchDivisions();
+
+    // Renders Sam and eSpeak while the panel is closed. The editor timer
+    // is not running then, and Reason does not pump it until the page opens.
+    struct SpeechPump;
+    std::unique_ptr<SpeechPump> speechPump;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ClicksProcessor)
 };

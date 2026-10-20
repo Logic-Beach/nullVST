@@ -565,7 +565,7 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     scatAttachment = addDrop (scatBox, scatLabel, "scatmode", "drift",
                               "Drift: Warble sways the whole mix passing through the tape, sub and echoes included. Wow at the rate knob, a lighter flutter on top. Repeat walks each source through a fixed run of steps. The rate knob sets how fast either one moves, apart from tape speed.");
     subAttachment = addDrop (subBox, subLabel, "submode", "mode",
-                             "Sub: Add and subtract mix it in. Multiply is ring modulation. Divide is the tone over the sub. AM is loudness. FM bends the pitch. Min and max pick the lower or higher sample.");
+                             "Sub: Add and subtract mix it in. Multiply is ring modulation. Divide is the tone over the other. AM is loudness. FM bends the pitch. Min and max pick the lower or higher sample. Fold reflects the wave. Xor is a digital mix. Diff is the distance between the two samples. Order picks which one the math lands on. Mix is how hard the other one is applied. Zero plays that one dry.");
     subWaveAttachment = addDrop (subWaveBox, subWaveLabel, "subwave", "shape",
                                  "Shape: sine, square, saw up, saw down, or triangle. The sub has its own width.");
     filtTypeAttachment = addDrop (filtTypeBox, filtTypeLabel, "filttype", "type",
@@ -620,7 +620,7 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     for (auto spec : { Spec { "subtune", "tune", "sub semis",
                               "Tune: sub pitch in semitones from the key. -12 is one octave down. It follows every note." },
                        Spec { "submix", "mix", "sub amount",
-                              "Mix: how hard the sub joins. Zero leaves every mode dry." },
+                              "Mix: how hard the other signal is applied to the one Order picks. Zero plays that one alone. Full is the whole math. The src and sub faders set how loud each oscillator is inside it." },
                        Spec { "slow", "speed", "rate",
                               "Speed: the tape rate for every source, main, sub, and speech. Tape drops the pitch as it slows and roughens the whole mix, without getting louder. Fix keeps the speech pitch and only changes the time. One plays the note as held. Tempo on, this is the beat division. Speech fills that division. Warble speed is the rate knob beside amount." },
                        Spec { "bits", "bits", "crush steps",
@@ -713,6 +713,12 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
                        Spec { "subrelease", "R", "",
                               "Sub release: fade of the sub after the key comes up. Sync steps this through beat divisions." } })
         senv.push_back (addFader (spec.id, spec.name, spec.hint, spec.tip));
+
+    for (auto spec : { Spec { "subcut", "cut", "",
+                              "Cut: low pass on the sub, in hertz. Full open leaves the sub as it is." },
+                       Spec { "subreso", "reso", "",
+                              "Reso: how hard the sub low pass rings at the cutoff." } })
+        sublp.push_back (addFader (spec.id, spec.name, spec.hint, spec.tip));
 
     for (auto spec : { Spec { "fattack", "A", "",
                               "Filter attack: how fast the filter envelope opens. Sync steps this through beat divisions." },
@@ -900,27 +906,6 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     nextButton.onClick = [this] { stepPreset (1); };
     styleButton (lockButton, "Lock: render the word now. Return in the phrase box does the same. Speed, pitch, mouth, and throat also follow a note you are already holding. A line that does not fit is refused.");
     lockButton.setButtonText ("lock");
-    styleButton (darkButton, "Dark: invert every colour on the panel. The choice is kept between sessions.");
-    darkButton.onClick = [this]
-    {
-        dark = ! dark;
-        if (prefs != nullptr)
-        {
-            prefs->setValue ("dark", dark);
-            prefs->saveIfNeeded();
-        }
-        applyTheme();
-    };
-    {
-        juce::PropertiesFile::Options opt;
-        opt.applicationName = "NullAtomo";
-        opt.filenameSuffix = "settings";
-        opt.folderName = "Logic Beach";
-        opt.osxLibrarySubFolder = "Application Support";
-        opt.storageFormat = juce::PropertiesFile::storeAsXML;
-        prefs = std::make_unique<juce::PropertiesFile> (opt);
-        dark = prefs->getBoolValue ("dark", false);
-    }
     initButton.onClick = [this] { initPreset(); };
     saveButton.onClick = [this] { savePreset(); };
     loadButton.onClick = [this] { loadPreset(); };
@@ -1052,6 +1037,15 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     armPair (f2AttackSync);
     armPair (f2DecaySync);
     armPair (f2ReleaseSync);
+    subOrderTick.setLookAndFeel (&look);
+    subOrderTick.setTooltip ("Order: src does the math to the source, using the sub. Sub does the math to the sub, using the source. FM bends whichever one the math lands on. Mix at zero plays that one with no math.");
+    subOrderTick.addMouseListener (this, true);
+    addAndMakeVisible (subOrderTick);
+    subOrderAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        clicks.apvts, "suborder", subOrderTick);
+    subOrderTick.getProperties().set ("pairL", "src");
+    subOrderTick.getProperties().set ("pairR", "sub");
+    armPair (subOrderTick);
     armPair (subAttackSync);
     armPair (subDecaySync);
     armPair (subReleaseSync);
@@ -1085,18 +1079,14 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     refreshLfo();
     refreshScatter();
     setSize (1216, 1082);
-    applyTheme();
     startTimerHz (30);
 }
 
 ClicksEditor::~ClicksEditor()
 {
     stopTimer();
-    for (auto* child : getChildren())
-        child->setComponentEffect (nullptr);
     tips.setLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
-    darkButton.setLookAndFeel (nullptr);
     initButton.setLookAndFeel (nullptr);
     saveButton.setLookAndFeel (nullptr);
     loadButton.setLookAndFeel (nullptr);
@@ -1108,6 +1098,7 @@ ClicksEditor::~ClicksEditor()
     slowRetrig.setLookAndFeel (nullptr);
     delayRetrig.setLookAndFeel (nullptr);
     pitchTick.setLookAndFeel (nullptr);
+    subOrderTick.setLookAndFeel (nullptr);
     delaySync.setLookAndFeel (nullptr);
     attackSync.setLookAndFeel (nullptr);
     decaySync.setLookAndFeel (nullptr);
@@ -1318,38 +1309,6 @@ void ClicksEditor::placeRow (std::vector<std::unique_ptr<Knob>>& knobs, int begi
 
 // Starfield, title wash, and the three paper sheets. Drawn once per layout
 // and blitted in paint(), so the big scans are resampled once.
-// Flip every channel in place. ARGB is premultiplied, so the inverse of a
-// colour under alpha a is a minus the stored value.
-static void invertPixels (juce::Image& image)
-{
-    juce::Image::BitmapData px (image, juce::Image::BitmapData::readWrite);
-    for (int y = 0; y < px.height; ++y)
-    {
-        if (px.pixelFormat == juce::Image::ARGB)
-        {
-            for (int x = 0; x < px.width; ++x)
-            {
-                auto* p = reinterpret_cast<juce::PixelARGB*> (px.getPixelPointer (x, y));
-                const int a = p->getAlpha();
-                p->setARGB ((juce::uint8) a,
-                            (juce::uint8) juce::jmax (0, a - (int) p->getRed()),
-                            (juce::uint8) juce::jmax (0, a - (int) p->getGreen()),
-                            (juce::uint8) juce::jmax (0, a - (int) p->getBlue()));
-            }
-        }
-        else if (px.pixelFormat == juce::Image::RGB)
-        {
-            for (int x = 0; x < px.width; ++x)
-            {
-                auto* p = reinterpret_cast<juce::PixelRGB*> (px.getPixelPointer (x, y));
-                p->setARGB (255, (juce::uint8) (255 - p->getRed()),
-                            (juce::uint8) (255 - p->getGreen()),
-                            (juce::uint8) (255 - p->getBlue()));
-            }
-        }
-    }
-}
-
 void ClicksEditor::bakeBackdrop()
 {
     const int w = getWidth();
@@ -1376,11 +1335,6 @@ void ClicksEditor::bakeBackdrop()
             g.fillRect (band);
         }
     }
-
-    // Dark mode flips the whole face at paint time. The stars are already
-    // dark, so they go in flipped here and come out as drawn.
-    if (dark)
-        invertPixels (backdrop);
 
     {
         juce::Graphics g (backdrop);
@@ -1471,61 +1425,6 @@ void ClicksEditor::bakeBackdrop()
     sheet (outPanel, look.panelOut);
 }
 
-void ClicksEditor::Invert::applyEffect (juce::Image& image, juce::Graphics& g, float, float alpha)
-{
-    invertPixels (image);
-    g.setOpacity (alpha);
-    g.drawImageAt (image, 0, 0);
-}
-
-void ClicksEditor::applyTheme()
-{
-    darkButton.setButtonText (dark ? "light" : "dark");
-    for (auto* child : getChildren())
-        child->setComponentEffect (dark ? &invert : nullptr);
-    // Menus open in their own window, outside the effect, so their colours flip here.
-    auto ink = [this] (juce::Colour c)
-    {
-        return dark ? juce::Colour::fromRGBA ((juce::uint8) (255 - c.getRed()), (juce::uint8) (255 - c.getGreen()),
-                                              (juce::uint8) (255 - c.getBlue()), c.getAlpha())
-                    : c;
-    };
-    look.setColour (juce::PopupMenu::backgroundColourId, ink (kPaper));
-    look.setColour (juce::PopupMenu::textColourId, ink (kPencil));
-    look.setColour (juce::PopupMenu::highlightedBackgroundColourId, ink (juce::Colour (0xffddd4c4)));
-    look.setColour (juce::PopupMenu::highlightedTextColourId, ink (kPencil));
-    bakeBackdrop();
-    repaint();
-}
-
-// Draw the dirty part of the face into a plate at screen resolution, flip
-// it, and blit it back. The plate is only as big as the region being
-// repainted, so the 30 Hz scope and meter updates stay cheap.
-void ClicksEditor::paintInverted (juce::Graphics& g)
-{
-    const auto clip = g.getClipBounds();
-    if (clip.isEmpty())
-        return;
-    const float scale = g.getInternalContext().getPhysicalPixelScaleFactor();
-    const int pw = juce::jmax (1, (int) std::ceil ((float) clip.getWidth() * scale));
-    const int ph = juce::jmax (1, (int) std::ceil ((float) clip.getHeight() * scale));
-    if (! darkPlate.isValid() || darkPlate.getWidth() != pw || darkPlate.getHeight() != ph)
-        darkPlate = juce::Image (juce::Image::ARGB, pw, ph, true);
-    else
-        darkPlate.clear (darkPlate.getBounds());
-    {
-        juce::Graphics g2 (darkPlate);
-        g2.addTransform (juce::AffineTransform::translation ((float) -clip.getX(), (float) -clip.getY())
-                             .scaled (scale));
-        paintFace (g2);
-    }
-    invertPixels (darkPlate);
-    juce::Graphics::ScopedSaveState ss (g);
-    g.addTransform (juce::AffineTransform::scale (1.f / scale));
-    g.drawImageAt (darkPlate, (int) std::lround ((float) clip.getX() * scale),
-                   (int) std::lround ((float) clip.getY() * scale));
-}
-
 void ClicksEditor::paintShadows (juce::Graphics& g)
 {
     for (auto* child : getChildren())
@@ -1600,10 +1499,7 @@ void ClicksEditor::paintShadows (juce::Graphics& g)
 
 void ClicksEditor::paint (juce::Graphics& g)
 {
-    if (dark)
-        paintInverted (g);
-    else
-        paintFace (g);
+    paintFace (g);
 }
 
 void ClicksEditor::paintFace (juce::Graphics& g)
@@ -2007,8 +1903,6 @@ void ClicksEditor::resized()
     bar.removeFromLeft (8);
     prevButton.setBounds (bar.removeFromLeft (24).reduced (0, 1));
     bar.removeFromLeft (2);
-    darkButton.setBounds (bar.removeFromRight (56).reduced (0, 1));
-    bar.removeFromRight (8);
     nextButton.setBounds (bar.removeFromRight (24).reduced (0, 1));
     bar.removeFromRight (2);
     presetBox.setBounds (bar.reduced (0, 1));
@@ -2090,15 +1984,36 @@ void ClicksEditor::resized()
         placeTight (speak, 0, 5, 96, voiceRow);
     }
 
-    subFrame = gen.removeFromTop (146);
+    subFrame = gen.removeFromTop (158);
     {
         auto box = subFrame.reduced (6, 4);
-        subTag = box.removeFromTop (24);
+        auto tagRow = box.removeFromTop (24);
+        subOrderTick.setBounds (tagRow.removeFromRight (112).reduced (0, 1));
+        tagRow.removeFromRight (6);
+        subTag = tagRow;
         auto lists = box.removeFromLeft (176);
         placeDrop (subLabel, subBox, lists.removeFromTop (dropH));
         lists.removeFromTop (4);
         placeDrop (subWaveLabel, subWaveBox, lists.removeFromTop (dropH));
-        subWavePlate = lists.reduced (2, 2);
+        lists.removeFromTop (4);
+        const int faderRows = juce::jmin (2, (int) sublp.size());
+        const int faderH = faderRows > 0 ? 24 * faderRows : 0;
+        auto faders = lists.removeFromTop (juce::jmin (faderH, lists.getHeight()));
+        const int rowH = faderRows > 0 ? std::max (20, faders.getHeight() / faderRows) : 0;
+        for (int i = 0; i < faderRows; ++i)
+        {
+            auto* fader = sublp[(size_t) i].get();
+            if (fader == nullptr)
+                continue;
+            auto line = faders.removeFromTop (rowH);
+            fader->slider.setSliderStyle (juce::Slider::LinearHorizontal);
+            fader->slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 48, 14);
+            fader->label.setFont (chicagoFont (13.f));
+            fader->label.setBounds (line.removeFromLeft (40));
+            fader->hint.setBounds ({});
+            fader->slider.setBounds (line.reduced (2, 2));
+        }
+        subWavePlate = lists.getHeight() >= 14 ? lists.reduced (2, 2) : juce::Rectangle<int>();
         placeCells ({ generator.size() > 1 ? generator[1].get() : nullptr,
                       generator.size() > 0 ? generator[0].get() : nullptr,
                       generator.size() > 11 ? generator[11].get() : nullptr,
@@ -2658,7 +2573,9 @@ void ClicksEditor::snapDivision (Knob& knob, const char* id, const char* syncId,
         const int index = ClickParams::divisionIndexNorm (param->getValue());
         const float anchor = param->convertFrom0to1 ((float) index / (float) (ClickParams::divisionCount() - 1));
         knob.hint.setText (ClickParams::divisionName (index), juce::dontSendNotification);
-        if (std::abs (raw - anchor) > std::max (0.0008f, std::abs (anchor) * 0.002f))
+        // A drag snaps onto the division. Host automation is left as the host wrote it.
+        if (knob.slider.isMouseButtonDown()
+            && std::abs (raw - anchor) > std::max (0.0008f, std::abs (anchor) * 0.002f))
             param->setValueNotifyingHost (param->convertTo0to1 (anchor));
         knob.slider.updateText();
     }
@@ -2793,7 +2710,7 @@ void ClicksEditor::timerCallback()
             const int index = ClickParams::divisionIndex (raw);
             const float anchor = ClickParams::divisionAnchor (index);
             generator[2]->hint.setText (ClickParams::divisionName (index), juce::dontSendNotification);
-            if (std::abs (raw - anchor) > 0.0008f)
+            if (slow.isMouseButtonDown() && std::abs (raw - anchor) > 0.0008f)
                 if (auto* param = clicks.apvts.getParameter ("slow"))
                     param->setValueNotifyingHost (param->convertTo0to1 (anchor));
             slow.updateText();
