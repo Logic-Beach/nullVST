@@ -261,6 +261,7 @@ public:
             voice.lastOut = 0.f;
             voice.fadeLeft = 0;
             voice.nLayers = 0;
+            voice.subSvf.cut = -1.f;
             for (auto& layer : voice.layer)
             {
                 layer.buf.assign ((size_t) cap, 0.f);
@@ -271,6 +272,12 @@ public:
         delay.assign ((size_t) delayLen, 0.f);
         write = 0;
         delayReady = false;
+        delayAsleep = true;
+        delayQuiet = 0;
+        delayFadeLeft = 0;
+        echoGainReady = false;
+        subRatioSemi = 1.0e30f;
+        limitCachedDb = 1.0e30f;
         tapeLen = (int) std::ceil (sampleRate * 0.15) + 16;
         tapeRing.assign ((size_t) tapeLen, 0.f);
         clearTape();
@@ -315,6 +322,9 @@ public:
         std::fill (delay.begin(), delay.end(), 0.f);
         write = 0;
         delayReady = false;
+        delayAsleep = true;
+        delayQuiet = 0;
+        delayFadeLeft = 0;
         clearTape();
         for (auto& st : band)
             clearFilt (st);
@@ -647,6 +657,11 @@ public:
         followTone();
         noteBass();
 
+        bool anyHeld = false;
+        for (const auto& voice : voices)
+            if (voice.active && voice.held)
+                anyHeld = true;
+
         auto park = [] (FiltState& st, int type)
         {
             if (type != 5)
@@ -654,11 +669,15 @@ public:
                 st.formIc1[0] = st.formIc1[1] = st.formIc1[2] = 0.f;
                 st.formIc2[0] = st.formIc2[1] = st.formIc2[2] = 0.f;
             }
-            if (type != 6)
+            // The resonator line is cleared once, when that mode is left.
+            if (type == 6)
+                st.resoLive = true;
+            else if (st.resoLive)
             {
                 std::fill (st.reso.begin(), st.reso.end(), 0.f);
                 st.resoWrite = 0;
                 st.resoDull = 0.f;
+                st.resoLive = false;
             }
         };
         park (band[0], filtType);
@@ -673,8 +692,17 @@ public:
             const float subWidthKeep = mix.subWidth;
             mix.subWidth = chase (slewSubWidth, subWidthKeep);
             const float echoNow = chase (slewEcho, std::clamp (mix.echo, 0.f, 1.f));
-            const float dryGain = std::cos (echoNow * 1.5707963f);
-            const float wetGain = std::sin (echoNow * 1.5707963f) * chase (slewDelayLvl, std::clamp (mix.delayLevel, 0.f, 1.f));
+            const float delayLvl = chase (slewDelayLvl, std::clamp (mix.delayLevel, 0.f, 1.f));
+            if (! echoGainReady || echoNow != echoGainEcho || delayLvl != echoGainLvl)
+            {
+                echoGainReady = true;
+                echoGainEcho = echoNow;
+                echoGainLvl = delayLvl;
+                dryGainNow = std::cos (echoNow * 1.5707963f);
+                wetGainNow = std::sin (echoNow * 1.5707963f) * delayLvl;
+            }
+            const float dryGain = dryGainNow;
+            const float wetGain = wetGainNow;
             const float level = chase (slewLevel, mix.level);
             const float feedNow = chase (slewFb, std::clamp (mix.feedback, 0.f, 0.99f));
             const float srcNow = chase (slewSrc, std::clamp (mix.srcLevel, 0.f, 1.f));
@@ -690,8 +718,8 @@ public:
             revSizeLive = chase (slewRevSize, std::clamp (mix.revSize, 0.f, 1.f));
             revDampLive = chase (slewRevDamp, std::clamp (mix.revDamp, 0.f, 1.f));
             const float targetDelay = std::clamp (mix.delaySec, 0.f, 16.f) * (float) sampleRate;
-            advanceFiltEnv (band[0], mix.fAttack, mix.fDecay, mix.fSustain, mix.fRelease);
-            advanceFiltEnv (band[1], mix.f2Attack, mix.f2Decay, mix.f2Sustain, mix.f2Release);
+            advanceFiltEnv (band[0], mix.fAttack, mix.fDecay, mix.fSustain, mix.fRelease, anyHeld);
+            advanceFiltEnv (band[1], mix.f2Attack, mix.f2Decay, mix.f2Sustain, mix.f2Release, anyHeld);
             auto aimedCut = [this] (float hz, float amt, float env)
             {
                 if (std::abs (amt) > 1.0e-5f)
@@ -881,11 +909,7 @@ public:
             };
             auto pushDelay = [&] (float into)
             {
-                into = std::clamp (into, -2.f, 2.f);
-                delay[(size_t) write] = into;
-                write += 1;
-                if (write >= delayLen)
-                    write = 0;
+                storeDelay (into);
             };
             auto stamp = [&] (float)
             {
@@ -929,8 +953,7 @@ public:
             float body = x;
             if (! stockRoute)
             {
-                glideDelay (targetDelay);
-                const float y = readDelay (smoothedDelay);
+                const float y = heardDelay (targetDelay);
                 float sig = x;
                 float send = x;
                 for (int n = 0; n < 6; ++n)
@@ -959,8 +982,7 @@ public:
 
                 stamp (x);
 
-                glideDelay (targetDelay);
-                const float y = readDelay (smoothedDelay);
+                const float y = heardDelay (targetDelay);
                 float mixed = x * dryGain + y;
                 if ((filtType > 0 || filt2Type > 0) && filtPlace == 1)
                     mixed = filtBus (mixed);
@@ -972,8 +994,7 @@ public:
             }
             else
             {
-                glideDelay (targetDelay);
-                const float y = readDelay (smoothedDelay);
+                const float y = heardDelay (targetDelay);
                 float mixed = x;
                 if (fxOrder == 1)
                 {
@@ -1026,6 +1047,9 @@ public:
 
         mix.filterHz = lfoBaseCut;
         mix.filterQ = lfoBaseQ;
+        mix.filter2Hz = lfoBaseCut2;
+        mix.filter2Q = lfoBaseQ2;
+        mix.filt2Amt = lfoBaseFilt2Amt;
         mix.delaySec = lfoBaseDelay;
         mix.echo = lfoBaseEcho;
         mix.crushMix = lfoBaseWet;
@@ -1089,6 +1113,16 @@ public:
     bool ready() const { return cap >= 16; }
 
 private:
+    struct SvfCoef
+    {
+        float cut = -1.f;
+        float q = -1.f;
+        float k = 1.f;
+        float a1 = 0.f;
+        float a2 = 0.f;
+        float a3 = 0.f;
+    };
+
     struct Rng
     {
         uint32_t s;
@@ -1176,6 +1210,7 @@ private:
         float subIc2 = 0.f;
         float subCut = 16000.f;
         float subQ = 0.7f;
+        SvfCoef subSvf;
         uint32_t oscNoise = 1;
         int beatCell = -100000;
         int scatStep = -100000;
@@ -1302,21 +1337,23 @@ private:
     // Low pass on the sub sample. Fully open returns the sample unchanged.
     float subLowpass (Voice& voice, float x)
     {
-        const float target = std::clamp (mix.subCut, 40.f, 16000.f);
+        const float requested = std::clamp (mix.subCut, 40.f, 16000.f);
         const float targetQ = std::clamp (mix.subReso, 0.3f, 8.f);
-        voice.subCut += 0.01f * (target - voice.subCut);
+        voice.subCut += 0.01f * (requested - voice.subCut);
         voice.subQ += 0.01f * (targetQ - voice.subQ);
-        if (sampleRate < 1000.0 || (target >= 15900.f && voice.subCut >= 15900.f))
+        if (sampleRate < 1000.0 || (requested >= 15900.f && voice.subCut >= 15900.f))
         {
             voice.subIc1 = 0.f;
             voice.subIc2 = 0.f;
+            voice.subSvf.cut = -1.f;
             return x;
         }
-        const float g = std::tan (3.14159265f * voice.subCut / (float) sampleRate);
-        const float k = 1.f / std::max (0.3f, voice.subQ);
-        const float a1 = 1.f / (1.f + g * (g + k));
-        const float a2 = g * a1;
-        const float a3 = g * a2;
+        // Stay under Nyquist. A cutoff above that makes tan() negative.
+        const float cut = std::min (voice.subCut, (float) (sampleRate * 0.45));
+        fillSvf (voice.subSvf, cut, voice.subQ);
+        const float a1 = voice.subSvf.a1;
+        const float a2 = voice.subSvf.a2;
+        const float a3 = voice.subSvf.a3;
         const float v3 = x - voice.subIc2;
         const float v1 = a1 * voice.subIc1 + a2 * v3;
         const float v2 = voice.subIc2 + a2 * voice.subIc1 + a3 * v3;
@@ -1340,7 +1377,12 @@ private:
         static const int shape[5] = { 1, 3, 2, 8, 4 };
         const int kind = shape[std::clamp (mix.subWave, 0, 4)];
         const float semi = std::clamp (mix.subTune + mix.subFine / 100.f, -36.f, 36.f);
-        const float ratio = std::pow (2.f, semi / 12.f);
+        if (semi != subRatioSemi)
+        {
+            subRatioSemi = semi;
+            subRatio = std::pow (2.f, semi / 12.f);
+        }
+        const float ratio = subRatio;
         const double inc = (double) midiHz (voice.note) * (double) slowNow * (double) ratio
                          * (double) bendMul / sampleRate;
         uint32_t unused = 1;
@@ -1754,8 +1796,10 @@ private:
         if (voice.holdLeft <= 0)
         {
             voice.holdLeft = std::max (1, hold);
-            const float clipped = std::clamp (sample * 1.8f, -1.f, 1.f);
-            const float q = std::floor ((clipped * 0.5f + 0.5f) * steps + 0.5f) / steps;
+            // 1.8 maps a normal voice onto the steps. Peaks above that stay
+            // intact so the output limiter, not this stage, is the ceiling.
+            const float scaled = sample * 1.8f;
+            const float q = std::floor ((scaled * 0.5f + 0.5f) * steps + 0.5f) / steps;
             voice.crushed = q * 2.f - 1.f;
         }
         --voice.holdLeft;
@@ -1855,7 +1899,8 @@ private:
         return state;
     }
 
-    // The read head never jumps by more than one sample, so a delay move does not click.
+    // Small moves crawl by at most one sample, which pitches instead of clicking.
+    // A large jump, such as a new synced division, crossfades over 20 ms.
     void glideDelay (float target)
     {
         float delta = 0.002f * (target - smoothedDelay);
@@ -1864,6 +1909,54 @@ private:
         else if (delta < -1.f)
             delta = -1.f;
         smoothedDelay += delta;
+    }
+
+    float heardDelay (float target)
+    {
+        const float gap = target - smoothedDelay;
+        if (delayFadeLeft <= 0 && std::abs (gap) > 64.f)
+        {
+            delayFadeFrom = smoothedDelay;
+            delayFadeSpan = std::max (2, (int) std::lround (sampleRate * 0.02));
+            delayFadeLeft = delayFadeSpan;
+            smoothedDelay = target;
+        }
+        else if (delayFadeLeft <= 0)
+            glideDelay (target);
+
+        const float neu = readDelay (smoothedDelay);
+        if (delayFadeLeft <= 0)
+            return neu;
+        const float old = readDelay (delayFadeFrom);
+        const float t = 1.f - (float) (delayFadeLeft - 1) / (float) (delayFadeSpan - 1);
+        const float w = 0.5f * (1.f - std::cos (3.14159265f * std::clamp (t, 0.f, 1.f)));
+        --delayFadeLeft;
+        return old * (1.f - w) + neu * w;
+    }
+
+    void storeDelay (float into)
+    {
+        if (delayAsleep)
+        {
+            if (std::abs (into) > 1.0e-6f)
+            {
+                delayAsleep = false;
+                delayQuiet = 0;
+            }
+            else
+                return;
+        }
+        into = std::clamp (into, -2.f, 2.f);
+        delay[(size_t) write] = into;
+        if (++write >= delayLen)
+            write = 0;
+        if (std::abs (into) <= 1.0e-6f)
+        {
+            if (++delayQuiet >= delayLen)
+                delayAsleep = true;
+        }
+        else
+            delayQuiet = 0;
     }
 
     float settleVoice (Voice& voice, float s)
@@ -2009,6 +2102,15 @@ private:
         bool ready = false;
         int stage = 2;
         float env = 0.f;
+        SvfCoef svf;
+        bool resoLive = false;
+        float formKeyCut = -1.f;
+        float formKeyQ = -1.f;
+        float formKeyShift = -1.f;
+        float formKeySpread = -1.f;
+        float formA1[3] {};
+        float formA2[3] {};
+        float formA3[3] {};
     };
 
     void clearFilt (FiltState& st)
@@ -2021,6 +2123,9 @@ private:
         st.formIc2[0] = st.formIc2[1] = st.formIc2[2] = 0.f;
         st.resoDull = 0.f;
         st.ready = false;
+        st.svf.cut = -1.f;
+        st.resoLive = false;
+        st.formKeyCut = -1.f;
     }
 
     // Resonant filter. Bandpass and notch stay near unity in the pass band.
@@ -2038,28 +2143,11 @@ private:
 
     float shapeFormant (FiltState& st, float x, float shiftAmt, float spreadAmt, float breathAmt)
     {
-        const float span = std::log (2500.f) - std::log (80.f);
-        const float u = std::clamp ((std::log (std::max (80.f, st.smoothedCut)) - std::log (80.f)) / span, 0.f, 1.f);
-        const float vowel[4][3] = {
-            { 300.f, 870.f, 2240.f },
-            { 730.f, 1090.f, 2440.f },
-            { 530.f, 1840.f, 2480.f },
-            { 270.f, 2290.f, 3010.f },
-        };
-        const float pos = u * 3.f;
-        const int a = std::min (2, (int) pos);
-        const float t = pos - (float) a;
         const float q = std::clamp (st.smoothedQ, 0.5f, 8.f);
         const float k = 1.f / q;
         const float gain[3] = { 1.f, 0.62f, 0.38f };
         const float shift = std::clamp (shiftAmt, 0.5f, 2.f);
         const float spread = std::clamp (spreadAmt, 0.25f, 2.5f);
-        float peak[3];
-        for (int i = 0; i < 3; ++i)
-            peak[i] = (vowel[a][i] * (1.f - t) + vowel[a + 1][i] * t) * shift;
-        const float root = peak[0];
-        peak[1] = root + (peak[1] - root) * spread;
-        peak[2] = root + (peak[2] - root) * spread;
         float excite = x;
         const float breath = std::clamp (breathAmt, 0.f, 1.f);
         if (breath > 0.001f)
@@ -2068,14 +2156,45 @@ private:
             const float n = ((st.formRng >> 8) / 16777216.f) * 2.f - 1.f;
             excite += n * breath * 0.45f;
         }
+        if (st.formKeyCut != st.smoothedCut || st.formKeyQ != q
+            || st.formKeyShift != shift || st.formKeySpread != spread)
+        {
+            st.formKeyCut = st.smoothedCut;
+            st.formKeyQ = q;
+            st.formKeyShift = shift;
+            st.formKeySpread = spread;
+            const float span = std::log (2500.f) - std::log (80.f);
+            const float u = std::clamp ((std::log (std::max (80.f, st.smoothedCut)) - std::log (80.f)) / span, 0.f, 1.f);
+            const float vowel[4][3] = {
+                { 300.f, 870.f, 2240.f },
+                { 730.f, 1090.f, 2440.f },
+                { 530.f, 1840.f, 2480.f },
+                { 270.f, 2290.f, 3010.f },
+            };
+            const float pos = u * 3.f;
+            const int band = std::min (2, (int) pos);
+            const float morph = pos - (float) band;
+            float peak[3];
+            for (int i = 0; i < 3; ++i)
+                peak[i] = (vowel[band][i] * (1.f - morph) + vowel[band + 1][i] * morph) * shift;
+            const float root = peak[0];
+            peak[1] = root + (peak[1] - root) * spread;
+            peak[2] = root + (peak[2] - root) * spread;
+            for (int i = 0; i < 3; ++i)
+            {
+                const float hz = std::clamp (peak[i], 40.f, (float) (sampleRate * 0.45));
+                const float g = std::tan (3.14159265f * hz / (float) sampleRate);
+                st.formA1[i] = 1.f / (1.f + g * (g + k));
+                st.formA2[i] = g * st.formA1[i];
+                st.formA3[i] = g * st.formA2[i];
+            }
+        }
         float y = 0.f;
         for (int i = 0; i < 3; ++i)
         {
-            const float hz = std::clamp (peak[i], 40.f, (float) (sampleRate * 0.45));
-            const float g = std::tan (3.14159265f * hz / (float) sampleRate);
-            const float a1 = 1.f / (1.f + g * (g + k));
-            const float a2 = g * a1;
-            const float a3 = g * a2;
+            const float a1 = st.formA1[i];
+            const float a2 = st.formA2[i];
+            const float a3 = st.formA3[i];
             const float v3 = excite - st.formIc2[i];
             const float v1 = a1 * st.formIc1[i] + a2 * v3;
             const float v2 = st.formIc2[i] + a2 * st.formIc1[i] + a3 * v3;
@@ -2144,13 +2263,26 @@ private:
         return y;
     }
 
+    void fillSvf (SvfCoef& c, float cut, float q) const
+    {
+        if (c.cut == cut && c.q == q)
+            return;
+        c.cut = cut;
+        c.q = q;
+        c.k = 1.f / std::max (0.3f, q);
+        const float g = std::tan (3.14159265f * cut / (float) sampleRate);
+        c.a1 = 1.f / (1.f + g * (g + c.k));
+        c.a2 = g * c.a1;
+        c.a3 = g * c.a2;
+    }
+
     float shapeFilter (FiltState& st, float v0, int type)
     {
-        const float g = std::tan (3.14159265f * st.smoothedCut / (float) sampleRate);
-        const float k = 1.f / std::max (0.3f, st.smoothedQ);
-        const float a1 = 1.f / (1.f + g * (g + k));
-        const float a2 = g * a1;
-        const float a3 = g * a2;
+        fillSvf (st.svf, st.smoothedCut, st.smoothedQ);
+        const float k = st.svf.k;
+        const float a1 = st.svf.a1;
+        const float a2 = st.svf.a2;
+        const float a3 = st.svf.a3;
         const float v3 = v0 - st.ic2;
         const float v1 = a1 * st.ic1 + a2 * v3;
         const float v2 = st.ic2 + a2 * st.ic1 + a3 * v3;
@@ -2172,7 +2304,7 @@ private:
 
     float readDelay (float samples)
     {
-        if (delayLen < 4)
+        if (delayAsleep || delayLen < 4)
             return 0.f;
         float d = std::clamp (samples, 0.f, (float) (delayLen - 3));
         const int i = (int) d;
@@ -2383,6 +2515,9 @@ private:
     {
         lfoBaseCut = mix.filterHz;
         lfoBaseQ = mix.filterQ;
+        lfoBaseCut2 = mix.filter2Hz;
+        lfoBaseQ2 = mix.filter2Q;
+        lfoBaseFilt2Amt = mix.filt2Amt;
         lfoBaseDelay = mix.delaySec;
         lfoBaseEcho = mix.echo;
         lfoBaseWet = mix.crushMix;
@@ -2484,12 +2619,8 @@ private:
         }
     }
 
-    void advanceFiltEnv (FiltState& st, float attack, float decay, float sustainLevel, float release)
+    void advanceFiltEnv (FiltState& st, float attack, float decay, float sustainLevel, float release, bool held)
     {
-        bool held = false;
-        for (const auto& voice : voices)
-            if (voice.active && voice.held)
-                held = true;
         if (! held && st.stage < 3)
             st.stage = 3;
         const float sustain = std::clamp (sustainLevel, 0.f, 1.f);
@@ -2542,7 +2673,8 @@ private:
     }
 
     // One bipolar step, -1 to 1. Sample-hold picks a new value each cycle.
-    float lfoSample (int i)
+    // full is false when the depth is zero: the phase still advances, the sine does not.
+    float lfoSample (int i, bool full)
     {
         float inc;
         if (mix.lfoSync[i] != 0 && mix.lfoQuarters[i] > 0.02f)
@@ -2565,6 +2697,8 @@ private:
             lfoRng[i] = lfoRng[i] * 1664525u + 1013904223u;
             lfoHold[i] = ((lfoRng[i] >> 8) / 16777216.f) * 2.f - 1.f;
         }
+        if (! full)
+            return 0.f;
 
         const float p = lfoPhase[i];
         switch (mix.lfoShape[i])
@@ -2580,63 +2714,67 @@ private:
 
     void applyLfo()
     {
-        float wave[ClickParams::lfoCount];
+        float mod[36] = {};
         for (int i = 0; i < ClickParams::lfoCount; ++i)
         {
-            wave[i] = lfoSample (i) * std::clamp (mix.lfoDepth[i], 0.f, 1.f);
-            lfoOut[i] = wave[i];
+            const float depth = std::clamp (mix.lfoDepth[i], 0.f, 1.f);
+            if (depth < 1.0e-6f)
+            {
+                lfoSample (i, false);
+                lfoOut[i] = 0.f;
+                continue;
+            }
+            const float wave = lfoSample (i, true) * depth;
+            lfoOut[i] = wave;
+            const int dest = mix.lfoDest[i];
+            if (dest > 0 && dest < 36)
+                mod[dest] += wave;
         }
-        auto amount = [&] (int dest)
-        {
-            float m = 0.f;
-            for (int i = 0; i < ClickParams::lfoCount; ++i)
-                if (mix.lfoDest[i] == dest)
-                    m += wave[i];
-            return m;
-        };
 
-        mix.filterHz = bendLog (lfoBaseCut, 40.f, 16000.f, amount (1));
-        mix.filterQ = bendLin (lfoBaseQ, 0.3f, 8.f, amount (2));
-        mix.delaySec = bendLin (lfoBaseDelay, 0.f, 16.f, amount (3));
-        mix.echo = bendLin (lfoBaseEcho, 0.f, 1.f, amount (4));
-        mix.crushMix = bendLin (lfoBaseWet, 0.f, 1.f, amount (5));
-        mix.glitch = bendLin (lfoBaseGlitch, 0.f, 1.f, amount (6));
-        if (mix.sync == 0)
-            mix.slow = bendLin (lfoBaseSlow, 0.25f, 1.25f, amount (7));
-        else
-            mix.slow = lfoBaseSlow;
-        const float levelMove = amount (8);
+        // Cut, reso, and the filter envelope land on both filters.
+        mix.filterHz = bendLog (lfoBaseCut, 40.f, 16000.f, mod[1]);
+        mix.filter2Hz = bendLog (lfoBaseCut2, 40.f, 16000.f, mod[1]);
+        mix.filterQ = bendLin (lfoBaseQ, 0.3f, 8.f, mod[2]);
+        mix.filter2Q = bendLin (lfoBaseQ2, 0.3f, 8.f, mod[2]);
+        mix.delaySec = bendLin (lfoBaseDelay, 0.f, 16.f, mod[3]);
+        mix.echo = bendLin (lfoBaseEcho, 0.f, 1.f, mod[4]);
+        mix.crushMix = bendLin (lfoBaseWet, 0.f, 1.f, mod[5]);
+        mix.glitch = bendLin (lfoBaseGlitch, 0.f, 1.f, mod[6]);
+        // Synced speed stays on the division. The LFO still bends that rate.
+        mix.slow = bendLin (lfoBaseSlow, 0.25f, 1.25f, mod[7]);
+        const float levelMove = mod[8];
         if (std::abs (levelMove) < 1.0e-6f)
             mix.level = lfoBaseLevel;
         else
             mix.level = std::pow (10.f, bendLin (lfoBaseDb, -18.f, 12.f, levelMove) / 20.f);
-        mix.bits = bendLin (lfoBaseBits, 2.f, 16.f, amount (9));
-        mix.hold = bendLin (lfoBaseHold, 1.f, 80.f, amount (10));
-        mix.feedback = bendLin (lfoBaseFb, 0.f, 0.99f, amount (11));
-        mix.scatter = bendLin (lfoBaseScatter, 0.f, 1.f, amount (12));
-        mix.subTune = bendLin (lfoBaseTune, -36.f, 36.f, amount (13));
-        mix.subMix = bendLin (lfoBaseSub, 0.f, 1.f, amount (14));
-        mix.formShift = bendLin (lfoBaseShift, 0.5f, 2.f, amount (15));
-        mix.formSpread = bendLin (lfoBaseSpread, 0.25f, 2.5f, amount (16));
-        mix.formBreath = bendLin (lfoBaseBreath, 0.f, 1.f, amount (17));
-        mix.resoDamp = bendLin (lfoBaseDamp, 0.f, 1.f, amount (18));
-        mix.resoTune = bendLin (lfoBaseRTune, -24.f, 24.f, amount (19));
-        mix.resoStack = bendLin (lfoBaseStack, 0.f, 1.f, amount (20));
-        mix.attack = bendLog (std::max (0.001f, lfoBaseAttack), 0.001f, 4.f, amount (21));
-        mix.decay = bendLog (std::max (0.001f, lfoBaseDecay), 0.001f, 4.f, amount (22));
-        mix.sustain = bendLin (lfoBaseSustain, 0.f, 1.f, amount (23));
-        mix.release = bendLog (std::max (0.001f, lfoBaseRelease), 0.001f, 4.f, amount (24));
-        mix.filtAmt = bendLin (lfoBaseFiltAmt, -1.f, 1.f, amount (25));
-        samSpeedMul = bendLin (1.f, 0.25f, 4.f, amount (26));
-        samPitchMul = bendLin (1.f, 0.5f, 2.f, amount (27));
-        mix.seed = bendLin (lfoBaseSeed, 0.f, 42.f, amount (28));
-        mix.fAttack = bendLog (std::max (0.001f, lfoBaseFAttack), 0.001f, 4.f, amount (29));
-        mix.fDecay = bendLog (std::max (0.001f, lfoBaseFDecay), 0.001f, 4.f, amount (30));
-        mix.fSustain = bendLin (lfoBaseFSustain, 0.f, 1.f, amount (31));
-        mix.fRelease = bendLog (std::max (0.001f, lfoBaseFRelease), 0.001f, 4.f, amount (32));
-        mix.steps = bendLin (lfoBaseSteps, 1.f, 16.f, amount (33));
-        mix.width = bendLin (lfoBaseWidth, 0.05f, 0.95f, amount (34));
-        mix.samDrag = bendLin (lfoBaseSamDrag, 0.f, 1.f, amount (35));
+        mix.bits = bendLin (lfoBaseBits, 2.f, 16.f, mod[9]);
+        mix.hold = bendLin (lfoBaseHold, 1.f, 80.f, mod[10]);
+        mix.feedback = bendLin (lfoBaseFb, 0.f, 0.99f, mod[11]);
+        mix.scatter = bendLin (lfoBaseScatter, 0.f, 1.f, mod[12]);
+        mix.subTune = bendLin (lfoBaseTune, -36.f, 36.f, mod[13]);
+        mix.subMix = bendLin (lfoBaseSub, 0.f, 1.f, mod[14]);
+        mix.formShift = bendLin (lfoBaseShift, 0.5f, 2.f, mod[15]);
+        mix.formSpread = bendLin (lfoBaseSpread, 0.25f, 2.5f, mod[16]);
+        mix.formBreath = bendLin (lfoBaseBreath, 0.f, 1.f, mod[17]);
+        mix.resoDamp = bendLin (lfoBaseDamp, 0.f, 1.f, mod[18]);
+        mix.resoTune = bendLin (lfoBaseRTune, -24.f, 24.f, mod[19]);
+        mix.resoStack = bendLin (lfoBaseStack, 0.f, 1.f, mod[20]);
+        mix.attack = bendLog (std::max (0.001f, lfoBaseAttack), 0.001f, 4.f, mod[21]);
+        mix.decay = bendLog (std::max (0.001f, lfoBaseDecay), 0.001f, 4.f, mod[22]);
+        mix.sustain = bendLin (lfoBaseSustain, 0.f, 1.f, mod[23]);
+        mix.release = bendLog (std::max (0.001f, lfoBaseRelease), 0.001f, 4.f, mod[24]);
+        mix.filtAmt = bendLin (lfoBaseFiltAmt, -1.f, 1.f, mod[25]);
+        mix.filt2Amt = bendLin (lfoBaseFilt2Amt, -1.f, 1.f, mod[25]);
+        samSpeedMul = bendLin (1.f, 0.25f, 4.f, mod[26]);
+        samPitchMul = bendLin (1.f, 0.5f, 2.f, mod[27]);
+        mix.seed = bendLin (lfoBaseSeed, 0.f, 42.f, mod[28]);
+        mix.fAttack = bendLog (std::max (0.001f, lfoBaseFAttack), 0.001f, 4.f, mod[29]);
+        mix.fDecay = bendLog (std::max (0.001f, lfoBaseFDecay), 0.001f, 4.f, mod[30]);
+        mix.fSustain = bendLin (lfoBaseFSustain, 0.f, 1.f, mod[31]);
+        mix.fRelease = bendLog (std::max (0.001f, lfoBaseFRelease), 0.001f, 4.f, mod[32]);
+        mix.steps = bendLin (lfoBaseSteps, 1.f, 16.f, mod[33]);
+        mix.width = bendLin (lfoBaseWidth, 0.05f, 0.95f, mod[34]);
+        mix.samDrag = bendLin (lfoBaseSamDrag, 0.f, 1.f, mod[35]);
     }
 
     double sampleRate = 44100.0;
@@ -2675,6 +2813,20 @@ private:
     int write = 0;
     float smoothedDelay = 0.f;
     bool delayReady = false;
+    bool delayAsleep = true;
+    int delayQuiet = 0;
+    float delayFadeFrom = 0.f;
+    int delayFadeLeft = 0;
+    int delayFadeSpan = 1;
+    bool echoGainReady = false;
+    float echoGainEcho = 0.f;
+    float echoGainLvl = 0.f;
+    float dryGainNow = 1.f;
+    float wetGainNow = 0.f;
+    float subRatioSemi = 1.0e30f;
+    float subRatio = 1.f;
+    float limitCachedDb = 1.0e30f;
+    float limitCachedCeil = 1.f;
     FiltState band[2];
     int resoLen = 0;
     float holdLevel (float x)
@@ -2768,7 +2920,7 @@ private:
 
     // Ceiling after the output level. Dist bends the note into that ceiling.
     // Dist 0 and a ceiling above 0 dB leave the sample alone.
-    float applyLimit (float x) const
+    float applyLimit (float x)
     {
         float y = x;
         if (limitDistLive > 0.001f)
@@ -2778,11 +2930,15 @@ private:
         }
         if (limitLive > 0.f)
             return y;
-        const float ceil = std::pow (10.f, std::clamp (limitLive, -24.f, 0.f) / 20.f);
+        if (limitCachedDb != limitLive)
+        {
+            limitCachedDb = limitLive;
+            limitCachedCeil = std::pow (10.f, std::clamp (limitLive, -24.f, 0.f) / 20.f);
+        }
         const float ay = std::abs (y);
-        if (ay <= ceil)
+        if (ay <= limitCachedCeil)
             return y;
-        return std::copysign (ceil, y);
+        return std::copysign (limitCachedCeil, y);
     }
 
     float lfoPhase[4] {};
@@ -2835,6 +2991,9 @@ private:
     int busFadeSpan = 1;
     float lfoBaseCut = 4000.f;
     float lfoBaseQ = 0.7f;
+    float lfoBaseCut2 = 4000.f;
+    float lfoBaseQ2 = 0.7f;
+    float lfoBaseFilt2Amt = 0.f;
     float lfoBaseDelay = 0.f;
     float lfoBaseEcho = 0.f;
     float lfoBaseWet = 1.f;
