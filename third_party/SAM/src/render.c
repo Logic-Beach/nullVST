@@ -24,6 +24,7 @@ extern unsigned char mem56;
 extern unsigned char samSpeed;
 extern unsigned char pitch;
 extern int singmode;
+extern int notematch;
 
 
 extern unsigned char phonemeIndexOutput[60]; //tab47296
@@ -421,7 +422,9 @@ do
         A = 1;
         mem48 = 1;
         //goto pos48376;
-        AddInflection(mem48, phase1);
+        // Note match keeps one pitch for the whole phrase.
+        if (! notematch)
+            AddInflection(mem48, phase1);
     }
     /*
     if (A == 2) goto pos48372;
@@ -432,7 +435,8 @@ do
     {
         // create falling inflection
         mem48 = 255;
-        AddInflection(mem48, phase1);
+        if (! notematch)
+            AddInflection(mem48, phase1);
     }
     //  pos47615:
 
@@ -458,7 +462,8 @@ do
         amplitude2[X] = ampl2data[Y];     // F2 amplitude
         amplitude3[X] = ampl3data[Y];     // F3 amplitude
         sampledConsonantFlag[X] = sampledConsonantFlags[Y];        // phoneme data for sampled consonants
-        pitches[X] = pitch + phase1;      // pitch
+        // Note match uses the pitch byte alone. Stress still bends the other voice.
+        pitches[X] = notematch ? pitch : (unsigned char) (pitch + phase1);
         X++;
         phase2--;
     } while(phase2 != 0);

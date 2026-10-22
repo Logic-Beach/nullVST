@@ -559,7 +559,7 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
         return std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (clicks.apvts, id, box);
     };
     waveAttachment = addDrop (waveBox, waveLabel, "wave", "wave",
-                              "Wave: Sine, saw up, saw down, square, and triangle follow Width. Noise is a hiss. Sam is the locked 1982 speech chip. eSpeak is a second speech voice with its own knobs. Either one lights the robot mouth.");
+                              "Wave: Sine, saw up, saw down, square, and triangle follow Width. Noise is a hiss. SAM is the 1982 speech chip with the pitch set from the key, so the formants stay put. eSpeak is a second speech voice with its own knobs. Either one lights the robot mouth.");
     polyAttachment = addDrop (polyBox, polyLabel, "poly", "voices",
                               "Voices: Mono keeps the newest key. Poly lets notes overlap.");
     scatAttachment = addDrop (scatBox, scatLabel, "scatmode", "drift",
@@ -654,7 +654,7 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     for (auto spec : {                        Spec { "samspeed", "speed", "sam talk",
                               "Speed: how fast Sam talks. It stays the same on every key, and a held note follows the knob. 72 is the 1982 voice. Higher is slower." },
                        Spec { "sampitch", "pitch", "sam pitch",
-                              "Pitch: Sam's own pitch. 64 is the original. A held note follows this knob. Keys change the pitch and leave the talk speed alone." },
+                              "Pitch: idle on SAM. The key is the note. Mouth, throat, and speed still shape the voice." },
                        Spec { "sammouth", "mouth", "sam mouth",
                               "Mouth: Sam's mouth shape. 128 is the original. A held note follows the knob." },
                        Spec { "samthroat", "throat", "sam throat",
@@ -929,7 +929,7 @@ ClicksEditor::ClicksEditor (ClicksProcessor& synth)
     sayLabel.setColour (juce::Label::textColourId, kPencil);
     sayLabel.setJustificationType (juce::Justification::centredLeft);
     sayLabel.setLookAndFeel (&look);
-    sayLabel.setTooltip ("Say: the line to lock. Sam is Software Automatic Mouth, the 1982 speech program from Don't Ask Software. eSpeak NG is the other speech voice.");
+    sayLabel.setTooltip ("Say: the line to lock. SAM is Software Automatic Mouth, the 1982 speech program from Don't Ask Software. The key sets its pitch. eSpeak NG is the other speech voice.");
     sayLabel.addMouseListener (this, true);
     addAndMakeVisible (sayLabel);
 
@@ -2635,6 +2635,14 @@ void ClicksEditor::refreshSam()
             show (knob->label, ! speakOn, samMode);
             show (knob->hint, false, false);
         }
+    // SAM takes its pitch from the key. The pitch knob stays visible and idle.
+    if (wave == 6 && sam.size() > 1 && sam[1] != nullptr)
+    {
+        sam[1]->slider.setEnabled (false);
+        sam[1]->label.setEnabled (false);
+        sam[1]->slider.setAlpha (0.38f);
+        sam[1]->label.setAlpha (0.38f);
+    }
     for (auto& knob : this->speak)
         if (knob != nullptr)
         {

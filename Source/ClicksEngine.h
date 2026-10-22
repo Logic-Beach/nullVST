@@ -1,5 +1,7 @@
 #pragma once
 
+#include "SamVoice.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -14,7 +16,9 @@
    wave 0 is the old click, kept so older tests still render. The panel
    starts at sine. Sine, saw up, saw down, square, triangle, and noise are generated
    live in process(), so bits and hold have a slope to crush.
-   voice 4 is Sam. It plays a sample locked in ahead of time.
+   voice 4 is speech. It plays a sample locked in ahead of time.
+   wave 6 is SAM. The pitch byte comes from the key, so the formants
+   stay put and the fundamental is that note. eSpeak is wave 7.
    Speed (the slow field) is the playback rate of every note.
    pitchFix 1 keeps speech pitch and only changes the time.
    pitchFix 0 is tape: slowing drops the pitch and roughens the sound.
@@ -391,6 +395,130 @@ public:
         speechSlot.store (slot, std::memory_order_release);
     }
 
+    // SAM keeps one flat render per pitch byte. The speech thread
+    // writes the side that is not playing. The audio thread reads the other.
+    void bumpSamNoteCookie()
+    {
+        noteCookie.fetch_add (1, std::memory_order_release);
+    }
+
+    uint32_t samNoteCookie() const
+    {
+        return noteCookie.load (std::memory_order_acquire);
+    }
+
+    bool samNoteReady (int pitchByte, uint32_t cookie) const
+    {
+        for (const auto& bin : noteBin)
+        {
+            const int pub = bin.pub.load (std::memory_order_acquire);
+            if (pub != 0 && pub != 1)
+                continue;
+            const NoteSide& side = bin.side[pub];
+            if (side.pitchByte == pitchByte && side.cookie == cookie && side.len >= 2)
+                return true;
+        }
+        return false;
+    }
+
+    bool samNotesPending() const
+    {
+        const uint32_t cookie = samNoteCookie();
+        if (! samNoteReady (samByteForHz (261.6256f), cookie))
+            return true;
+        for (const auto& want : noteWant)
+        {
+            const int byte = want.load (std::memory_order_relaxed);
+            if (byte > 0 && ! samNoteReady (byte, cookie))
+                return true;
+        }
+        return false;
+    }
+
+    int collectSamWants (int* dst, int max) const
+    {
+        int n = 0;
+        if (dst == nullptr || max <= 0)
+            return 0;
+        for (const auto& want : noteWant)
+        {
+            const int byte = want.load (std::memory_order_relaxed);
+            if (byte <= 0)
+                continue;
+            bool seen = false;
+            for (int i = 0; i < n; ++i)
+                seen = seen || dst[i] == byte;
+            if (seen || n >= max)
+                continue;
+            dst[n++] = byte;
+        }
+        return n;
+    }
+
+    void setSamNote (int pitchByte, uint32_t cookie, const float* src, int length, float refHz, double renderedRate)
+    {
+        if (src == nullptr || length < 2 || pitchByte < 1 || refHz < 20.f)
+            return;
+        int bin = -1;
+        int freeBin = -1;
+        for (int i = 0; i < noteBinCount; ++i)
+        {
+            const int pub = noteBin[i].pub.load (std::memory_order_acquire);
+            if (pub == 0 || pub == 1)
+            {
+                if (noteBin[i].side[pub].pitchByte == pitchByte)
+                    bin = i;
+            }
+            else if (freeBin < 0)
+                freeBin = i;
+        }
+        if (bin < 0 && freeBin >= 0)
+            bin = freeBin;
+        if (bin < 0)
+        {
+            for (int k = 0; k < noteBinCount; ++k)
+            {
+                const int idx = (noteClock + k) % noteBinCount;
+                const int pub = noteBin[idx].pub.load (std::memory_order_acquire);
+                const int byte = (pub == 0 || pub == 1) ? noteBin[idx].side[pub].pitchByte : 0;
+                bool held = byte == samByteForHz (261.6256f);
+                for (int w = 0; w < 8 && ! held; ++w)
+                    held = noteWant[w].load (std::memory_order_relaxed) == byte && byte != 0;
+                if (! held)
+                {
+                    bin = idx;
+                    break;
+                }
+            }
+            if (bin < 0)
+                bin = noteClock % noteBinCount;
+            ++noteClock;
+        }
+        NoteBin& slot = noteBin[bin];
+        const int cur = slot.pub.load (std::memory_order_acquire);
+        const int side = cur == 0 ? 1 : 0;
+        NoteSide& dst = slot.side[side];
+        dst.samples.assign (src, src + length);
+        dst.len = length;
+        dst.refHz = refHz;
+        dst.pitchByte = pitchByte;
+        dst.cookie = cookie;
+        dst.renderedRate = renderedRate > 1000.0 ? renderedRate : 44100.0;
+        dst.id = ++noteSerial;
+        const int fadeN = (int) std::lround (dst.renderedRate * 0.012);
+        const int nFade = std::min (fadeN, std::max (1, length / 3));
+        if (nFade > 1)
+        {
+            for (int i = 0; i < nFade; ++i)
+            {
+                const float w = 0.5f * (1.f - std::cos (3.14159265f * (float) i / (float) (nFade - 1)));
+                dst.samples[(size_t) i] *= w;
+                dst.samples[(size_t) (length - 1 - i)] *= w;
+            }
+        }
+        slot.pub.store (side, std::memory_order_release);
+    }
+
     void letGo (Voice& voice)
     {
         voice.held = false;
@@ -544,7 +672,14 @@ public:
         const bool sam = params.wave == 6 || params.wave == 7 || params.voice == 4;
         if (sam)
         {
-            addSpeech (*voice, midiHz (note));
+            const bool noted = params.wave == 6;
+            addSpeech (*voice, midiHz (note), noted);
+            if (noted)
+            {
+                const int v = (int) (voice - voices);
+                if (v >= 0 && v < 8 && voice->nLayers > 0)
+                    noteWant[v].store (voice->layer[0].samByte, std::memory_order_relaxed);
+            }
             return;
         }
         if (params.wave > 0)
@@ -682,6 +817,26 @@ public:
         };
         park (band[0], filtType);
         park (band[1], filt2Type);
+
+        if (mix.wave == 6)
+        {
+            for (int v = 0; v < 8; ++v)
+            {
+                int byte = 0;
+                if (voices[v].active)
+                    for (int n = 0; n < voices[v].nLayers; ++n)
+                        if (voices[v].layer[n].noteMatched)
+                            byte = voices[v].layer[n].samByte;
+                noteWant[v].store (byte, std::memory_order_relaxed);
+            }
+            noteWantArmed = true;
+        }
+        else if (noteWantArmed)
+        {
+            for (int v = 0; v < 8; ++v)
+                noteWant[v].store (0, std::memory_order_relaxed);
+            noteWantArmed = false;
+        }
 
         for (int i = 0; i < numSamples; ++i)
         {
@@ -917,16 +1072,16 @@ public:
                 ++scopeWrite;
             };
 
-            // A single note is left alone. Extra sounding notes share the bus,
-            // eased over a short glide, so a held chord stays under the crush
-            // clip and the output ceiling.
+            // One note is left alone. Extra notes share the bus by equal power,
+            // eased over a short glide, so a chord stays near the level of one
+            // note. The output limiter still catches a stacked peak.
             int sounding = 0;
             for (const auto& voice : voices)
                 if (voice.active)
                     ++sounding;
             const float polyTarget = sounding <= 1
                 ? 1.f
-                : 1.f / (1.f + 0.72f * (float) (sounding - 1));
+                : 1.f / std::sqrt ((float) sounding);
             const float polyDelta = polyTarget - polyGain;
             if (std::abs (polyDelta) <= 1.0e-6f)
                 polyGain = polyTarget;
@@ -1179,6 +1334,18 @@ private:
         double loopHop = 0;
         int loopLeft = 0;
         int loopSpan = 1;
+        bool noteMatched = false;
+        int samByte = 0;
+        int noteSeenId = -1;
+        int noteLen = 0;
+        const float* noteBuf = nullptr;
+        const float* noteFadeBuf = nullptr;
+        int noteFadeLen = 0;
+        double noteFadeRead = 0;
+        double noteFadeHop = 0;
+        float noteFadePitch = 1.f;
+        int noteFadeLeft = 0;
+        int noteFadeSpan = 1;
     };
 
     struct Voice
@@ -1509,6 +1676,8 @@ private:
     // locked sample, so a new render is heard on a note that is still held.
     float sampleSpeech (Voice& voice, Layer& layer, float slowNow, float rateMul, float wander)
     {
+        if (layer.noteMatched)
+            return sampleNoteSpeech (voice, layer, slowNow, rateMul, wander);
         const int slot = speechSlot.load (std::memory_order_acquire);
         const SpeechLoop& loop = speech[slot];
         if (! layer.playing || loop.len < 2 || loop.samples.empty())
@@ -2321,22 +2490,177 @@ private:
         return at (i) * (1.f - f) + at (i + 1) * f;
     }
 
+    // SAM. The buffer's pitch byte is the key, so formants stay.
+    // A nearby byte plays at the right note until that render arrives.
+    // The phrase length does not follow the pitch byte.
+    float sampleNoteSpeech (Voice& voice, Layer& layer, float slowNow, float rateMul, float wander)
+    {
+        if (! layer.playing)
+            return 0.f;
+        const NoteSide* side = samNoteFor (layer.samByte);
+        if (side == nullptr || side->len < 2 || side->samples.empty())
+            return 0.f;
+
+        if (side->id != layer.noteSeenId)
+        {
+            if (layer.noteSeenId >= 0 && layer.noteBuf != nullptr && layer.noteLen > 1)
+            {
+                layer.noteFadeBuf = layer.noteBuf;
+                layer.noteFadeLen = layer.noteLen;
+                layer.noteFadeRead = layer.read;
+                layer.noteFadeHop = layer.hop;
+                layer.noteFadePitch = layer.speechRatio;
+                layer.noteFadeSpan = std::max (1, (int) std::lround (sampleRate * 0.03));
+                layer.noteFadeLeft = layer.noteFadeSpan;
+            }
+            const double oldLen = layer.noteLen > 1 ? (double) layer.noteLen : (double) side->len;
+            const double frac = layer.noteSeenId < 0 ? 0.0 : layer.read / oldLen;
+            layer.noteSeenId = side->id;
+            layer.noteBuf = side->samples.data();
+            layer.noteLen = side->len;
+            layer.len = side->len;
+            layer.read = frac * (double) side->len;
+            layer.hop = 0.0;
+            layer.rate = (float) (side->renderedRate / sampleRate);
+        }
+        layer.pitch = side->refHz > 20.f ? sourceHz (voice) / side->refHz : 1.f;
+
+        float clock = slowNow;
+        if (mix.sync && mix.restartQuarters > 0.02f && side->renderedRate > 1000.0 && clockBpm > 1.0)
+        {
+            const double phraseSec = (double) side->len / side->renderedRate;
+            const double divSec = (double) mix.restartQuarters * 60.0 / clockBpm;
+            if (phraseSec > 0.001 && divSec > 0.001)
+                clock = (float) std::clamp (phraseSec / divSec, 0.05, 32.0);
+        }
+        const float pitchScale = mix.pitchFix ? 1.f : clock;
+        const float talk = clock * samSpeedMul * std::clamp (mix.samDrag, 0.f, 1.f);
+        const float targetRatio = std::clamp (layer.pitch * rateMul * samPitchMul * wander * pitchScale, 0.25f, 4.f);
+        const float ratioSlew = 1.f / std::max (1.f, 0.01f * (float) sampleRate);
+        layer.speechRatio += ratioSlew * (targetRatio - layer.speechRatio);
+        const float pitched = layer.speechRatio;
+        const float basePitch = std::max (0.05f, layer.pitch * rateMul * samPitchMul * pitchScale);
+        const float slewedWander = std::clamp (pitched / basePitch, 0.25f, 4.f);
+        const float timeRate = std::max (0.f, layer.rate * talk * slewedWander);
+        const double grain = layer.grain > 64.0 ? layer.grain : 512.0;
+        const float* samples = side->samples.data();
+        const int len = side->len;
+
+        auto grainPair = [&] (const float* buf, int bufLen, double g, double& read, double& hop,
+                              float ratio, float time) -> float
+        {
+            if (bufLen < 2 || g < 8.0)
+                return 0.f;
+            const double span = (double) bufLen;
+            auto wrap = [&] (double p)
+            {
+                p = std::fmod (p, span);
+                if (p < 0.0)
+                    p += span;
+                return p;
+            };
+            auto window = [&] (double h)
+            {
+                return 0.5f * (1.f - std::cos (6.28318530718f * (float) (h / g)));
+            };
+            const double hop2 = hop + g * 0.5 >= g ? hop + g * 0.5 - g : hop + g * 0.5;
+            const double read2 = wrap (read + (double) (ratio - time) * (hop2 - hop));
+            const float out = readWrapped (buf, bufLen, wrap (read)) * window (hop)
+                            + readWrapped (buf, bufLen, read2) * window (hop2);
+            read += (double) ratio;
+            hop += 1.0;
+            if (hop >= g)
+            {
+                hop -= g;
+                read -= (double) (ratio - time) * g;
+            }
+            read = wrap (read);
+            if (hop < 0.0)
+                hop = 0.0;
+            return out;
+        };
+
+        float s = 0.f;
+        if (layer.delay > 0)
+            --layer.delay;
+        else
+            s = grainPair (samples, len, grain, layer.read, layer.hop, pitched, timeRate);
+
+        if (layer.loopLeft > 0 && layer.loopSpan > 0)
+        {
+            const float old = grainPair (samples, len, grain, layer.loopFrom, layer.loopHop, pitched, timeRate);
+            const float u = (float) layer.loopLeft / (float) layer.loopSpan;
+            const float w = 0.5f * (1.f - std::cos (3.14159265f * (1.f - u)));
+            s = old * (1.f - w) + s * w;
+            --layer.loopLeft;
+        }
+
+        if (layer.noteFadeLeft > 0 && layer.noteFadeBuf != nullptr && layer.noteFadeLen > 1)
+        {
+            const float old = grainPair (layer.noteFadeBuf, layer.noteFadeLen, grain,
+                                         layer.noteFadeRead, layer.noteFadeHop,
+                                         layer.noteFadePitch, timeRate);
+            const float u = (float) layer.noteFadeLeft / (float) layer.noteFadeSpan;
+            const float w = 0.5f * (1.f - std::cos (3.14159265f * (1.f - u)));
+            s = s * (1.f - w) + old * w;
+            --layer.noteFadeLeft;
+        }
+        return s;
+    }
+
+    struct NoteSide;
+    const NoteSide* samNoteFor (int pitchByte) const
+    {
+        const uint32_t cookie = noteCookie.load (std::memory_order_acquire);
+        const NoteSide* exact = nullptr;
+        const NoteSide* near = nullptr;
+        int nearDist = 1000;
+        for (const auto& bin : noteBin)
+        {
+            const int pub = bin.pub.load (std::memory_order_acquire);
+            if (pub != 0 && pub != 1)
+                continue;
+            const NoteSide& side = bin.side[pub];
+            if (side.cookie != cookie || side.len < 2 || side.samples.empty())
+                continue;
+            if (side.pitchByte == pitchByte)
+            {
+                exact = &side;
+                break;
+            }
+            const int dist = std::abs (side.pitchByte - pitchByte);
+            if (dist < nearDist)
+            {
+                nearDist = dist;
+                near = &side;
+            }
+        }
+        return exact != nullptr ? exact : near;
+    }
+
     // Copy the locked word. Talk rate stays put. The key only sets pitch.
-    void addSpeech (Voice& voice, float hz)
+    void addSpeech (Voice& voice, float hz, bool noteMatch)
     {
         if (voice.nLayers >= 2)
             return;
         const int slot = speechSlot.load (std::memory_order_acquire);
         const SpeechLoop& loop = speech[slot];
-        if (loop.len < 2 || loop.refHz < 20.f)
+        if (! noteMatch && (loop.len < 2 || loop.refHz < 20.f))
             return;
         Layer& layer = voice.layer[voice.nLayers++];
-        layer.len = loop.len;
-        layer.rate = (float) (loop.renderedRate / sampleRate);
+        layer.len = noteMatch ? 0 : loop.len;
+        layer.rate = noteMatch ? 1.f : (float) (loop.renderedRate / sampleRate);
         layer.noteHz = hz;
-        layer.pitch = hz / loop.refHz;
+        layer.pitch = noteMatch || loop.refHz < 20.f ? 1.f : hz / loop.refHz;
         layer.speechRatio = layer.pitch;
         layer.speech = true;
+        layer.noteMatched = noteMatch;
+        layer.samByte = noteMatch ? samByteForHz (hz) : 0;
+        layer.noteSeenId = -1;
+        layer.noteBuf = nullptr;
+        layer.noteLen = 0;
+        layer.noteFadeBuf = nullptr;
+        layer.noteFadeLeft = 0;
         layer.speechSlotSeen = -1;
         layer.fadeLeft = 0;
         layer.fadeSlot = -1;
@@ -3031,6 +3355,29 @@ private:
     int scatterOrigin = 0;     // Repeat counts from here while speed retrig is on
     double syncOriginPpq = 0;  // the beat division counts from here while speed retrig is on
     float samPitchMul = 1.f;
+
+    struct NoteSide
+    {
+        std::vector<float> samples;
+        int len = 0;
+        float refHz = 0.f;
+        int pitchByte = 0;
+        uint32_t cookie = 0;
+        int id = 0;
+        double renderedRate = 44100.0;
+    };
+    struct NoteBin
+    {
+        NoteSide side[2];
+        std::atomic<int> pub { -1 };
+    };
+    static constexpr int noteBinCount = 12;
+    NoteBin noteBin[noteBinCount];
+    std::atomic<uint32_t> noteCookie { 1 };
+    std::atomic<int> noteWant[8] {};
+    bool noteWantArmed = false;
+    int noteClock = 0;
+    int noteSerial = 0;
     float samSpeedMul = 1.f;
     float bendSemis = 0.f;
     float bendMul = 1.f;

@@ -11,6 +11,10 @@ void SetPitch(unsigned char _pitch);
 void SetMouth(unsigned char _mouth);
 void SetThroat(unsigned char _throat);
 void EnableSingmode();
+// Flat pitch: the pitch byte is the whole fundamental, stress and
+// punctuation do not bend it. Used so a key can be the note.
+void EnableNotematch();
+void DisableNotematch();
 void EnableDebug();
 
 int SAMMain();

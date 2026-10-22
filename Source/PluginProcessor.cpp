@@ -115,8 +115,8 @@ ClickParams ClicksProcessor::readParams() const
 {
     ClickParams params;
     const int picked = juce::jlimit (0, 7, (int) std::lround (tap (tap_wave)));
-    // Menu: sine, saw up, saw down, square, triangle, noise, Sam, eSpeak.
-    // Engine 2 stays the rising saw. 8 is the falling saw.
+    // Menu: sine, saw up, saw down, square, triangle, noise, SAM, eSpeak.
+    // Engine 2 stays the rising saw. 8 is the falling saw. 6 is SAM.
     static const int engineWave[8] = { 1, 2, 8, 3, 4, 5, 6, 7 };
     params.wave = engineWave[picked];
     params.voice = (params.wave == 6 || params.wave == 7) ? 4 : 1;
@@ -345,6 +345,14 @@ void ClicksProcessor::replacePluginState (const juce::XmlElement& xml)
         }
         tree.setProperty ("sawdown", 1, nullptr);
     }
+    // The short-lived Sam note entry lived at index 8. SAM is index 6.
+    for (int i = 0; i < tree.getNumChildren(); ++i)
+    {
+        auto child = tree.getChild (i);
+        if (child.getProperty ("id").toString() == "wave"
+            && (int) std::lround ((float) child.getProperty ("value", 0)) == 8)
+            child.setProperty ("value", 6, nullptr);
+    }
     apvts.replaceState (tree);
     loadMidiMapFromState();
     currentProgram.store (juce::jlimit (0, getNumPrograms() - 1,
@@ -362,6 +370,7 @@ juce::String ClicksProcessor::lockSpeech (bool announce)
     const auto word = samText();
     const int wave = (int) std::lround (apvts.getRawParameterValue ("wave")->load());
     const bool espeak = wave == 7;
+    const bool noteSam = wave == 6;
     const double hostRate = engine.engineSampleRate();
     const double useRate = hostRate > 1000.0 ? hostRate : 44100.0;
     const int maxLen = std::max (8, (int) std::ceil (useRate * 8.0));
@@ -396,6 +405,64 @@ juce::String ClicksProcessor::lockSpeech (bool announce)
                                     speed, pitch, mouth, throat, variant, &cut, dataPath.toRawUTF8());
         refHz = 110.f + (float) (pitch - 50) * 1.5f;
     }
+    else if (noteSam)
+    {
+        speed = std::clamp ((int) std::lround (apvts.getRawParameterValue ("samspeed")->load()), 1, 255);
+        mouth = std::clamp ((int) std::lround (apvts.getRawParameterValue ("sammouth")->load()), 0, 255);
+        throat = std::clamp ((int) std::lround (apvts.getRawParameterValue ("samthroat")->load()), 0, 255);
+        const bool fresh = speechLiveKind != 2 || speed != samLiveSpeed
+            || mouth != samLiveMouth || throat != samLiveThroat || word != samLiveWord;
+        if (fresh)
+            engine.bumpSamNoteCookie();
+        const uint32_t cookie = engine.samNoteCookie();
+        int bytes[9];
+        int nBytes = 0;
+        auto pushByte = [&] (int b)
+        {
+            b = std::clamp (b, 1, 255);
+            for (int i = 0; i < nBytes; ++i)
+                if (bytes[i] == b)
+                    return;
+            if (nBytes < 9)
+                bytes[nBytes++] = b;
+        };
+        pushByte (samByteForHz (261.6256f));
+        int wants[8];
+        const int nWant = engine.collectSamWants (wants, 8);
+        for (int i = 0; i < nWant; ++i)
+            pushByte (wants[i]);
+        pitch = 0;
+        speechLiveKind = 2;
+        samLiveSpeed = speed;
+        samLiveMouth = mouth;
+        samLiveThroat = throat;
+        samLiveWord = word;
+        n = 0;
+        cut = 0;
+        int readyNotes = 0;
+        const float quiet[2] = { 0.f, 0.f };
+        for (int i = 0; i < nBytes; ++i)
+        {
+            if (engine.samNoteReady (bytes[i], cookie))
+            {
+                ++readyNotes;
+                continue;
+            }
+            const int got = renderSamSpeech (buf.data(), maxLen, useRate, word.toRawUTF8(),
+                                             speed, bytes[i], mouth, throat, &cut, 1);
+            if (got >= 2)
+            {
+                engine.setSamNote (bytes[i], cookie, buf.data(), got, samFlatHz (bytes[i]), useRate);
+                n = got;
+                refHz = samFlatHz (bytes[i]);
+                ++readyNotes;
+            }
+            else
+                engine.setSamNote (bytes[i], cookie, quiet, 2, samFlatHz (bytes[i]), useRate);
+        }
+        if (n < 2 && readyNotes > 0)
+            n = 2;
+    }
     else
     {
         speed = std::clamp ((int) std::lround (apvts.getRawParameterValue ("samspeed")->load()), 1, 255);
@@ -412,11 +479,11 @@ juce::String ClicksProcessor::lockSpeech (bool announce)
                              word.toRawUTF8(), speed, pitch, mouth, throat, &cut);
         refHz = 6805.6f / (float) pitch;
     }
-    if (n >= 2)
+    if (n >= 2 && ! noteSam)
         engine.setSpeech (buf.data(), n, refHz, useRate);
 
     const double secs = n >= 2 ? (double) n / useRate : 0.0;
-    const char* who = espeak ? "eSpeak" : "Sam";
+    const char* who = espeak ? "eSpeak" : "SAM";
     juce::String status;
     if (espeak && n < 2 && cut == 0)
         status = "eSpeak could not speak that. The voice data may be missing from the plugin.";
@@ -439,6 +506,16 @@ bool ClicksProcessor::samNeedsRender() const
     const int wave = (int) std::lround (apvts.getRawParameterValue ("wave")->load());
     if (wave != 6 && wave != 7)
         return false;
+    if (wave == 6)
+    {
+        const int speed = std::clamp ((int) std::lround (apvts.getRawParameterValue ("samspeed")->load()), 1, 255);
+        const int mouth = std::clamp ((int) std::lround (apvts.getRawParameterValue ("sammouth")->load()), 0, 255);
+        const int throat = std::clamp ((int) std::lround (apvts.getRawParameterValue ("samthroat")->load()), 0, 255);
+        if (speechLiveKind != 2 || speed != samLiveSpeed || mouth != samLiveMouth
+            || throat != samLiveThroat || samText() != samLiveWord)
+            return true;
+        return engine.samNotesPending();
+    }
     if (wave == 7)
     {
         const int rate = std::clamp ((int) std::lround (apvts.getRawParameterValue ("espeakrate")->load()), 80, 450);
@@ -451,14 +528,7 @@ bool ClicksProcessor::samNeedsRender() const
             return true;
         return samText() != samLiveWord;
     }
-    const int speed = std::clamp ((int) std::lround (apvts.getRawParameterValue ("samspeed")->load()), 1, 255);
-    const int pitch = std::clamp ((int) std::lround (apvts.getRawParameterValue ("sampitch")->load()), 1, 255);
-    const int mouth = std::clamp ((int) std::lround (apvts.getRawParameterValue ("sammouth")->load()), 0, 255);
-    const int throat = std::clamp ((int) std::lround (apvts.getRawParameterValue ("samthroat")->load()), 0, 255);
-    if (speechLiveKind != 0 || speed != samLiveSpeed || pitch != samLivePitch
-        || mouth != samLiveMouth || throat != samLiveThroat)
-        return true;
-    return samText() != samLiveWord;
+    return false;
 }
 
 void ClicksProcessor::setSamText (const juce::String& raw)
@@ -652,228 +722,6 @@ namespace
                 { "filttype", 2 }, { "filtcut", 6000.f }, { "filtq", 0.8f },
                 { "level", 0.f } } },
             NG_USER_FACTORY
-            // Variants of the saved patches. Names sit in the same pile.
-            { "subboom", "hello", {
-                { "poly", 0 }, { "wave", 1 }, { "subwave", 0 }, { "submode", 1 }, { "submix", 1.f },
-                { "subtune", -12.f }, { "sublevel", 0.9f }, { "srclevel", 0.4f },
-                { "attacksync", 0 }, { "decaysync", 0 }, { "releasesync", 0 },
-                { "attack", 0.002f }, { "decay", 0.32f }, { "sustain", 0.6f }, { "release", 0.18f },
-                { "subattacksync", 0 }, { "subdecaysync", 0 }, { "subreleasesync", 0 },
-                { "subattack", 0.002f }, { "subdecay", 0.4f }, { "subsustain", 0.7f }, { "subrelease", 0.2f },
-                { "filttype", 1 }, { "filtcut", 160.f }, { "filtq", 2.4f }, { "fenv", 0.75f }, { "fdecay", 0.2f },
-                { "limitdist", 0.18f }, { "level", -1.5f } } },
-            { "ghostbass", "hello", {
-                { "poly", 0 }, { "wave", 0 }, { "subwave", 2 }, { "submode", 11 }, { "submix", 0.7f },
-                { "subtune", -12.f }, { "sublevel", 0.7f }, { "srclevel", 0.55f },
-                { "scatter", 0.22f }, { "wobrate", 0.35f }, { "scatglide", 0.5f },
-                { "attacksync", 0 }, { "decaysync", 0 }, { "releasesync", 0 },
-                { "attack", 0.012f }, { "decay", 0.55f }, { "sustain", 0.75f }, { "release", 0.35f },
-                { "subattacksync", 0 }, { "subattack", 0.02f }, { "subdecay", 0.6f }, { "subsustain", 0.8f }, { "subrelease", 0.4f },
-                { "filttype", 1 }, { "filtcut", 260.f }, { "filtq", 1.3f },
-                { "revmix", 0.28f }, { "revsize", 0.45f }, { "srcglide", 0.05f } } },
-            { "XorBass", "hello", {
-                { "poly", 0 }, { "wave", 3 }, { "subwave", 0 }, { "submode", 10 }, { "submix", 0.75f },
-                { "subtune", -12.f }, { "width", 0.28f }, { "bits", 6.f }, { "crushmix", 0.5f },
-                { "attacksync", 0 }, { "decaysync", 0 }, { "releasesync", 0 },
-                { "attack", 0.003f }, { "decay", 0.18f }, { "sustain", 0.45f }, { "release", 0.1f },
-                { "subattacksync", 0 }, { "subattack", 0.003f }, { "subdecay", 0.22f }, { "subsustain", 0.5f }, { "subrelease", 0.12f },
-                { "filttype", 1 }, { "filtcut", 880.f }, { "filtq", 0.9f }, { "fenv", 0.35f }, { "fdecay", 0.14f } } },
-            { "foldbass", "hello", {
-                { "poly", 0 }, { "wave", 1 }, { "subwave", 3 }, { "submode", 9 }, { "submix", 0.85f },
-                { "subtune", -7.f }, { "sublevel", 0.8f },
-                { "attacksync", 0 }, { "decaysync", 0 }, { "releasesync", 0 },
-                { "attack", 0.004f }, { "decay", 0.2f }, { "sustain", 0.55f }, { "release", 0.12f },
-                { "subattacksync", 0 }, { "subattack", 0.004f }, { "subdecay", 0.24f }, { "subsustain", 0.6f }, { "subrelease", 0.14f },
-                { "filttype", 1 }, { "filtcut", 480.f }, { "filtq", 3.2f }, { "fenv", 0.45f }, { "fdecay", 0.16f },
-                { "limitdist", 0.12f } } },
-            { "fmrumble", "hello", {
-                { "poly", 0 }, { "wave", 0 }, { "subwave", 0 }, { "submode", 6 }, { "submix", 0.7f },
-                { "subtune", -12.f }, { "srcglide", 0.07f },
-                { "attacksync", 0 }, { "decaysync", 0 }, { "releasesync", 0 },
-                { "attack", 0.006f }, { "decay", 0.45f }, { "sustain", 0.8f }, { "release", 0.28f },
-                { "subattacksync", 0 }, { "subattack", 0.01f }, { "subdecay", 0.5f }, { "subsustain", 0.85f }, { "subrelease", 0.3f },
-                { "filttype", 1 }, { "filtcut", 320.f }, { "filtq", 1.6f }, { "fenv", 0.3f }, { "fdecay", 0.35f } } },
-            { "glidebass", "hello", {
-                { "poly", 0 }, { "wave", 1 }, { "subwave", 1 }, { "submode", 1 }, { "submix", 1.f },
-                { "subtune", -12.f }, { "srcglide", 0.14f }, { "sublevel", 0.75f }, { "srclevel", 0.5f },
-                { "attacksync", 0 }, { "decaysync", 0 }, { "releasesync", 0 },
-                { "attack", 0.01f }, { "decay", 0.5f }, { "sustain", 0.85f }, { "release", 0.22f },
-                { "subattacksync", 0 }, { "subattack", 0.01f }, { "subdecay", 0.5f }, { "subsustain", 0.9f }, { "subrelease", 0.25f },
-                { "filttype", 1 }, { "filtcut", 420.f }, { "filtq", 1.4f }, { "fenv", 0.5f }, { "fdecay", 0.28f } } },
-            { "squarebass", "hello", {
-                { "poly", 0 }, { "wave", 3 }, { "width", 0.32f }, { "subwave", 3 }, { "submode", 8 },
-                { "submix", 1.f }, { "subtune", -12.f }, { "bits", 12.f },
-                { "attacksync", 0 }, { "decaysync", 0 }, { "releasesync", 0 },
-                { "attack", 0.002f }, { "decay", 0.24f }, { "sustain", 0.5f }, { "release", 0.08f },
-                { "subattacksync", 0 }, { "subattack", 0.002f }, { "subdecay", 0.28f }, { "subsustain", 0.55f }, { "subrelease", 0.1f },
-                { "filttype", 1 }, { "filtcut", 220.f }, { "filtq", 1.9f }, { "fenv", 0.55f }, { "fdecay", 0.12f } } },
-            { "crushbass", "hello", {
-                { "poly", 0 }, { "wave", 2 }, { "bits", 5.f }, { "hold", 3.f }, { "crushmix", 0.85f }, { "glitch", 0.18f },
-                { "subwave", 0 }, { "submode", 1 }, { "submix", 1.f }, { "subtune", -24.f }, { "sublevel", 0.85f },
-                { "attacksync", 0 }, { "decaysync", 0 }, { "releasesync", 0 },
-                { "attack", 0.001f }, { "decay", 0.14f }, { "sustain", 0.35f }, { "release", 0.07f },
-                { "subattacksync", 0 }, { "subattack", 0.001f }, { "subdecay", 0.2f }, { "subsustain", 0.4f }, { "subrelease", 0.08f },
-                { "filttype", 1 }, { "filtcut", 150.f }, { "filtq", 1.1f }, { "level", -2.f } } },
-            { "humpad", "hello", {
-                { "wave", 4 }, { "subwave", 4 }, { "submode", 8 }, { "submix", 0.55f }, { "subtune", 0.f }, { "subfine", 7.f },
-                { "attack", 15, true }, { "decay", 17, true }, { "sustain", 0.9f }, { "release", 18, true },
-                { "subdecaysync", 1 }, { "subreleasesync", 1 },
-                { "subattack", 15, true }, { "subdecay", 17, true }, { "subsustain", 0.9f }, { "subrelease", 18, true },
-                { "scatter", 0.1f }, { "wobrate", 0.28f }, { "scatglide", 0.7f },
-                { "filttype", 1 }, { "filtcut", 640.f }, { "filtq", 0.8f },
-                { "lfo1dest", 1 }, { "lfo1depth", 0.16f }, { "lfo1rate", 0.08f },
-                { "revmix", 0.48f }, { "revsize", 0.72f }, { "revdamp", 0.4f } } },
-            { "ghostpad", "hello", {
-                { "wave", 0 }, { "subwave", 0 }, { "submode", 11 }, { "submix", 0.6f }, { "subtune", 12.f },
-                { "scatter", 0.24f }, { "wobrate", 0.45f }, { "scatglide", 0.65f },
-                { "attack", 13, true }, { "sustain", 0.85f }, { "release", 17, true },
-                { "subreleasesync", 1 },
-                { "subattack", 13, true }, { "subrelease", 17, true },
-                { "filttype", 1 }, { "filtcut", 980.f }, { "filtq", 1.1f },
-                { "revmix", 0.58f }, { "revsize", 0.86f }, { "revdamp", 0.35f } } },
-            { "DiffSwell", "hello", {
-                { "wave", 3 }, { "width", 0.4f }, { "subwave", 0 }, { "submode", 11 }, { "submix", 1.f }, { "subtune", -12.f },
-                { "attack", 17, true }, { "decay", 15, true }, { "sustain", 0.72f }, { "release", 19, true },
-                { "subreleasesync", 1 },
-                { "subattack", 17, true }, { "subrelease", 19, true },
-                { "filttype", 1 }, { "filtcut", 240.f }, { "filtq", 1.3f },
-                { "lfo1dest", 1 }, { "lfo1depth", 0.28f }, { "lfo1sync", 1 }, { "lfo1rate", 13, true },
-                { "revmix", 0.42f }, { "revsize", 0.7f } } },
-            { "formantpad", "ah", {
-                { "wave", 4 }, { "subwave", 0 }, { "submode", 1 }, { "submix", 0.4f }, { "subtune", -12.f }, { "sublevel", 0.35f },
-                { "attack", 13, true }, { "sustain", 0.88f }, { "release", 17, true },
-                { "subreleasesync", 1 },
-                { "subattack", 13, true }, { "subrelease", 17, true },
-                { "filttype", 5 }, { "filtcut", 720.f }, { "filtq", 2.2f },
-                { "formshift", 1.1f }, { "formspread", 1.35f }, { "formbreath", 0.18f },
-                { "revmix", 0.38f }, { "revsize", 0.6f } } },
-            { "warblehum", "hello", {
-                { "wave", 4 }, { "subwave", 4 }, { "submode", 1 }, { "submix", 0.5f }, { "subtune", 0.f }, { "subfine", 5.f },
-                { "scatter", 0.38f }, { "wobrate", 0.32f }, { "scatglide", 0.9f },
-                { "attack", 15, true }, { "sustain", 0.92f }, { "release", 18, true },
-                { "subreleasesync", 1 },
-                { "subattack", 15, true }, { "subrelease", 18, true },
-                { "filttype", 1 }, { "filtcut", 760.f }, { "filtq", 1.6f },
-                { "revmix", 0.32f }, { "revsize", 0.55f }, { "revdamp", 0.45f } } },
-            { "RobotChoir", "ah ah ah", {
-                { "wave", 6 }, { "subwave", 4 }, { "submode", 1 }, { "submix", 0.35f }, { "subtune", -12.f }, { "sublevel", 0.3f },
-                { "sampitch", 48.f }, { "samspeed", 58.f }, { "sammouth", 140.f },
-                { "bits", 12.f }, { "crushmix", 0.35f }, { "scatter", 0.16f }, { "wobrate", 0.6f },
-                { "attack", 7, true }, { "release", 13, true },
-                { "subreleasesync", 1 },
-                { "subattack", 7, true }, { "subrelease", 13, true },
-                { "delaysync", 1 }, { "delay", 10, true }, { "echo", 0.22f }, { "feedback", 0.28f },
-                { "revmix", 0.4f }, { "revsize", 0.65f },
-                { "filttype", 1 }, { "filtcut", 1400.f }, { "filtq", 0.7f } } },
-            { "maxpad", "hello", {
-                { "wave", 1 }, { "subwave", 2 }, { "submode", 8 }, { "submix", 0.7f }, { "subtune", 7.f },
-                { "attack", 13, true }, { "sustain", 0.86f }, { "release", 17, true },
-                { "subreleasesync", 1 },
-                { "subattack", 13, true }, { "subrelease", 17, true },
-                { "filttype", 1 }, { "filtcut", 520.f }, { "filtq", 1.05f },
-                { "lfo1dest", 1 }, { "lfo1depth", 0.22f }, { "lfo1rate", 0.11f },
-                { "revmix", 0.4f }, { "revsize", 0.62f } } },
-            { "sinecloud", "hello", {
-                { "wave", 0 }, { "subwave", 0 }, { "submode", 3 }, { "submix", 0.45f }, { "subtune", 12.f }, { "subfine", -8.f },
-                { "scatter", 0.12f }, { "wobrate", 0.18f }, { "scatglide", 1.2f },
-                { "attack", 17, true }, { "sustain", 0.9f }, { "release", 18, true },
-                { "subreleasesync", 1 },
-                { "subattack", 17, true }, { "subrelease", 18, true },
-                { "revmix", 0.62f }, { "revsize", 0.92f }, { "revdamp", 0.5f } } },
-            { "noisekick", "hello", {
-                { "poly", 0 }, { "wave", 5 }, { "submode", 1 }, { "subwave", 0 }, { "submix", 1.f },
-                { "subtune", -24.f }, { "sublevel", 0.95f }, { "srclevel", 0.35f },
-                { "attacksync", 0 }, { "decaysync", 0 }, { "releasesync", 0 },
-                { "attack", 0.001f }, { "decay", 0.11f }, { "sustain", 0.f }, { "release", 0.04f },
-                { "subattacksync", 0 }, { "subdecaysync", 0 }, { "subreleasesync", 0 },
-                { "subattack", 0.001f }, { "subdecay", 0.2f }, { "subsustain", 0.f }, { "subrelease", 0.05f },
-                { "filttype", 1 }, { "filtcut", 140.f }, { "filtq", 1.5f }, { "fenv", 0.85f }, { "fdecay", 0.07f },
-                { "level", -2.f } } },
-            { "subkick", "hello", {
-                { "poly", 0 }, { "wave", 0 }, { "srclevel", 0.25f }, { "submode", 1 }, { "subwave", 0 },
-                { "submix", 1.f }, { "subtune", -12.f }, { "sublevel", 1.f },
-                { "attacksync", 0 }, { "decaysync", 0 }, { "releasesync", 0 },
-                { "attack", 0.001f }, { "decay", 0.24f }, { "sustain", 0.f }, { "release", 0.05f },
-                { "subattacksync", 0 }, { "subdecaysync", 0 }, { "subreleasesync", 0 },
-                { "subattack", 0.001f }, { "subdecay", 0.28f }, { "subsustain", 0.f }, { "subrelease", 0.06f },
-                { "filttype", 1 }, { "filtcut", 90.f }, { "filtq", 0.7f }, { "level", -1.f } } },
-            { "tickhat", "hello", {
-                { "wave", 5 }, { "submode", 0 }, { "sublevel", 0.f }, { "srclevel", 0.8f },
-                { "bits", 8.f }, { "crushmix", 0.45f },
-                { "attacksync", 0 }, { "decaysync", 0 }, { "releasesync", 0 },
-                { "attack", 0.001f }, { "decay", 0.035f }, { "sustain", 0.f }, { "release", 0.02f },
-                { "filttype", 2 }, { "filtcut", 6500.f }, { "filtq", 0.55f }, { "level", -4.f } } },
-            { "snapnoise", "hello", {
-                { "wave", 5 }, { "submode", 0 }, { "sublevel", 0.f },
-                { "bits", 3.f }, { "hold", 2.f }, { "crushmix", 1.f }, { "glitch", 0.45f },
-                { "attacksync", 0 }, { "decaysync", 0 }, { "releasesync", 0 },
-                { "attack", 0.001f }, { "decay", 0.055f }, { "sustain", 0.f }, { "release", 0.02f },
-                { "filttype", 3 }, { "filtcut", 2200.f }, { "filtq", 2.4f }, { "level", -3.f } } },
-            { "zapbp", "hello", {
-                { "wave", 5 }, { "submode", 0 }, { "sublevel", 0.f },
-                { "attacksync", 0 }, { "decaysync", 0 }, { "releasesync", 0 },
-                { "attack", 0.001f }, { "decay", 0.16f }, { "sustain", 0.f }, { "release", 0.04f },
-                { "filttype", 3 }, { "filtcut", 4200.f }, { "filtq", 6.f }, { "fenv", -0.85f }, { "fdecay", 0.11f },
-                { "level", -3.f } } },
-            { "noisetom", "hello", {
-                { "wave", 5 }, { "submode", 1 }, { "subwave", 2 }, { "submix", 0.45f },
-                { "subtune", -12.f }, { "sublevel", 0.4f }, { "srclevel", 0.7f },
-                { "attacksync", 0 }, { "decaysync", 0 }, { "releasesync", 0 },
-                { "attack", 0.002f }, { "decay", 0.3f }, { "sustain", 0.f }, { "release", 0.08f },
-                { "subattacksync", 0 }, { "subdecaysync", 0 }, { "subreleasesync", 0 },
-                { "subattack", 0.002f }, { "subdecay", 0.26f }, { "subsustain", 0.f }, { "subrelease", 0.08f },
-                { "filttype", 3 }, { "filtcut", 380.f }, { "filtq", 3.1f }, { "fenv", -0.4f }, { "fdecay", 0.18f },
-                { "level", -2.f } } },
-            { "whoaswell", "whoa", {
-                { "wave", 6 }, { "subwave", 0 }, { "submode", 1 }, { "submix", 0.3f }, { "subtune", -12.f }, { "sublevel", 0.28f },
-                { "sampitch", 74.f }, { "samspeed", 48.f }, { "sammouth", 160.f }, { "samthroat", 140.f },
-                { "attack", 15, true }, { "sustain", 0.8f }, { "release", 17, true },
-                { "subreleasesync", 1 },
-                { "subattack", 15, true }, { "subrelease", 17, true },
-                { "filttype", 1 }, { "filtcut", 1100.f }, { "filtq", 0.8f },
-                { "revmix", 0.52f }, { "revsize", 0.78f }, { "revdamp", 0.3f } } },
-            { "iiiiswell", "i i i", {
-                { "wave", 6 }, { "sampitch", 42.f }, { "samspeed", 82.f }, { "sammouth", 90.f },
-                { "bits", 7.f }, { "crushmix", 0.55f }, { "scatter", 0.32f }, { "wobrate", 1.6f },
-                { "submode", 1 }, { "submix", 0.2f }, { "subtune", -12.f }, { "sublevel", 0.25f },
-                { "attack", 13, true }, { "release", 15, true },
-                { "subreleasesync", 1 },
-                { "subattack", 13, true }, { "subrelease", 15, true },
-                { "delaysync", 1 }, { "delay", 7, true }, { "echo", 0.32f }, { "feedback", 0.34f },
-                { "revmix", 0.3f }, { "revsize", 0.5f } } },
-            { "atomohum", "null atomo", {
-                { "wave", 7 }, { "espeakrate", 108.f }, { "espeakpitch", 28.f }, { "espeakvoice", 2.f }, { "espeakrange", 70.f },
-                { "submode", 1 }, { "subwave", 4 }, { "submix", 0.22f }, { "subtune", -12.f }, { "sublevel", 0.3f },
-                { "attack", 17, true }, { "sustain", 0.85f }, { "release", 18, true },
-                { "subreleasesync", 1 },
-                { "subattack", 17, true }, { "subrelease", 18, true },
-                { "filttype", 5 }, { "filtcut", 480.f }, { "filtq", 1.6f }, { "formbreath", 0.08f },
-                { "revmix", 0.46f }, { "revsize", 0.7f } } },
-            { "ohkayghost", "i i i, am oh kay", {
-                { "wave", 6 }, { "sampitch", 64.f }, { "samspeed", 66.f },
-                { "bits", 4.f }, { "crushmix", 0.72f }, { "scatter", 0.2f }, { "wobrate", 0.9f },
-                { "attack", 7, true }, { "release", 13, true },
-                { "delaysync", 1 }, { "delay", 10, true }, { "echo", 0.36f }, { "feedback", 0.42f },
-                { "revmix", 0.55f }, { "revsize", 0.8f }, { "revdamp", 0.25f },
-                { "filttype", 1 }, { "filtcut", 900.f } } },
-            { "eswell", "ah", {
-                { "wave", 7 }, { "espeakrate", 88.f }, { "espeakpitch", 18.f }, { "espeakrange", 84.f }, { "espeakvoice", 1.f },
-                { "submode", 5 }, { "subwave", 0 }, { "submix", 0.4f }, { "subtune", 0.f }, { "sublevel", 0.35f },
-                { "attack", 15, true }, { "decay", 17, true }, { "sustain", 0.82f }, { "release", 19, true },
-                { "subreleasesync", 1 },
-                { "subattack", 15, true }, { "subrelease", 19, true },
-                { "filttype", 1 }, { "filtcut", 680.f }, { "filtq", 0.9f },
-                { "revmix", 0.6f }, { "revsize", 0.84f }, { "revdamp", 0.4f } } },
-            { "talkghost", "hello ooo", {
-                { "wave", 7 }, { "espeakrate", 136.f }, { "espeakpitch", 42.f }, { "espeakvoice", 4.f },
-                { "bits", 10.f }, { "crushmix", 0.35f }, { "scatter", 0.26f }, { "wobrate", 0.75f }, { "scatglide", 0.4f },
-                { "submode", 11 }, { "submix", 0.25f }, { "subwave", 3 }, { "subtune", -5.f },
-                { "attack", 10, true }, { "release", 15, true },
-                { "subreleasesync", 1 },
-                { "subattack", 10, true }, { "subrelease", 15, true },
-                { "delaysync", 1 }, { "delay", 9, true }, { "echo", 0.22f }, { "feedback", 0.3f },
-                { "revmix", 0.5f }, { "revsize", 0.66f },
-                { "filttype", 1 }, { "filtcut", 1600.f }, { "filtq", 0.6f } } },
         };
         return table;
     }
@@ -1233,7 +1081,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ClicksProcessor::createLayou
     layout.add (std::make_unique<AudioParameterChoice> (
         ParameterID { "wave", 1 },
         "Wave",
-        StringArray { "Sine", "Saw up", "Saw down", "Square", "Triangle", "Noise", "Sam", "eSpeak" },
+        StringArray { "Sine", "Saw up", "Saw down", "Square", "Triangle", "Noise", "SAM", "eSpeak" },
         0,
         choice));
     layout.add (std::make_unique<AudioParameterFloat> (

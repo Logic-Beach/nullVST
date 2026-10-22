@@ -13,6 +13,7 @@ unsigned char pitch = 64;
 unsigned char mouth = 128;
 unsigned char throat = 128;
 int singmode = 0;
+int notematch = 0;
 
 extern int debug;
 
@@ -60,6 +61,8 @@ void SetPitch(unsigned char _pitch) {pitch = _pitch;}
 void SetMouth(unsigned char _mouth) {mouth = _mouth;}
 void SetThroat(unsigned char _throat) {throat = _throat;}
 void EnableSingmode() {singmode = 1;}
+void EnableNotematch() {notematch = 1; singmode = 1;}
+void DisableNotematch() {notematch = 0;}
 char* GetBuffer(){return buffer;}
 int GetBufferLength(){return bufferpos;}
 void ReleaseSamBuffer()

@@ -153,7 +153,7 @@ namespace
 
 int renderSamSpeech (float* dst, int maxLen, double sampleRate,
                      const char* text, int speed, int pitch, int mouth, int throat,
-                     int* cut)
+                     int* cut, int noteMatch)
 {
     if (cut != nullptr)
         *cut = 0;
@@ -200,6 +200,10 @@ int renderSamSpeech (float* dst, int maxLen, double sampleRate,
     SetPitch ((unsigned char) pitchByte);
     SetMouth ((unsigned char) mouthByte);
     SetThroat ((unsigned char) throatByte);
+    if (noteMatch)
+        EnableNotematch();
+    else
+        DisableNotematch();
     EnableSingmode();
     samError = 0;
     samOverflow = 0;
