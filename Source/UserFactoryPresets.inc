@@ -2232,6 +2232,151 @@ R"ENDPRESET(<?xml version="1.0" encoding="UTF-8"?>
 </PARAMS>
 )ENDPRESET";
 
+static const char saved_eyeeyeeyeeyeeye[] =
+R"ENDPRESET(<?xml version="1.0" encoding="UTF-8"?>
+
+<PARAMS sam="vvvvv" waveid="2" sawdown="1" preset="eyeeyeeyeeyeeye" program="0"
+        midicc_123="lfo1rate">
+  <PARAM id="attack" value="0.2000000178813934"/>
+  <PARAM id="attacksync" value="1.0"/>
+  <PARAM id="bits" value="16.0"/>
+  <PARAM id="compgain" value="5.700000286102295"/>
+  <PARAM id="compmix" value="1.0"/>
+  <PARAM id="compratio" value="1.0"/>
+  <PARAM id="compslot" value="5.0"/>
+  <PARAM id="compthresh" value="0.0"/>
+  <PARAM id="crushlevel" value="1.0"/>
+  <PARAM id="crushmix" value="1.0"/>
+  <PARAM id="crushslot" value="2.0"/>
+  <PARAM id="decay" value="0.2000000178813934"/>
+  <PARAM id="decaysync" value="1.0"/>
+  <PARAM id="delay" value="0.0"/>
+  <PARAM id="delaylevel" value="1.0"/>
+  <PARAM id="delayretrig" value="0.0"/>
+  <PARAM id="delayslot" value="3.0"/>
+  <PARAM id="delaysync" value="0.0"/>
+  <PARAM id="echo" value="0.0"/>
+  <PARAM id="espeakgap" value="0.0"/>
+  <PARAM id="espeakpitch" value="49.99999618530273"/>
+  <PARAM id="espeakrange" value="49.99999618530273"/>
+  <PARAM id="espeakrate" value="175.0"/>
+  <PARAM id="espeakvoice" value="0.0"/>
+  <PARAM id="f2attack" value="0.01000000070780516"/>
+  <PARAM id="f2attacksync" value="0.0"/>
+  <PARAM id="f2decay" value="0.1800000071525574"/>
+  <PARAM id="f2decaysync" value="0.0"/>
+  <PARAM id="f2env" value="-2.235174179077148e-8"/>
+  <PARAM id="f2release" value="0.2000000178813934"/>
+  <PARAM id="f2releasesync" value="0.0"/>
+  <PARAM id="f2sustain" value="0.0"/>
+  <PARAM id="fattack" value="0.01000000070780516"/>
+  <PARAM id="fattacksync" value="0.0"/>
+  <PARAM id="fdecay" value="0.1800000071525574"/>
+  <PARAM id="fdecaysync" value="0.0"/>
+  <PARAM id="feedback" value="0.0"/>
+  <PARAM id="fenv" value="-2.235174179077148e-8"/>
+  <PARAM id="filt2cut" value="551.0"/>
+  <PARAM id="filt2mix" value="1.0"/>
+  <PARAM id="filt2q" value="7.25"/>
+  <PARAM id="filt2type" value="0.0"/>
+  <PARAM id="filtcut" value="311.0"/>
+  <PARAM id="filtmix" value="1.0"/>
+  <PARAM id="filtq" value="8.0"/>
+  <PARAM id="filtslot" value="1.0"/>
+  <PARAM id="filttype" value="1.0"/>
+  <PARAM id="form2breath" value="0.0"/>
+  <PARAM id="form2shift" value="0.5"/>
+  <PARAM id="form2spread" value="0.25"/>
+  <PARAM id="formbreath" value="0.0"/>
+  <PARAM id="formshift" value="1.0"/>
+  <PARAM id="formspread" value="1.0"/>
+  <PARAM id="frelease" value="0.2000000178813934"/>
+  <PARAM id="freleasesync" value="0.0"/>
+  <PARAM id="fsustain" value="0.0"/>
+  <PARAM id="fxorder" value="0.0"/>
+  <PARAM id="glitch" value="0.0"/>
+  <PARAM id="hold" value="26.0"/>
+  <PARAM id="level" value="0.8000003099441528"/>
+  <PARAM id="lfo1depth" value="0.4199999868869781"/>
+  <PARAM id="lfo1dest" value="1.0"/>
+  <PARAM id="lfo1rate" value="0.456000030040741"/>
+  <PARAM id="lfo1retrig" value="0.0"/>
+  <PARAM id="lfo1shape" value="3.0"/>
+  <PARAM id="lfo1sync" value="1.0"/>
+  <PARAM id="lfo2depth" value="0.9099999666213989"/>
+  <PARAM id="lfo2dest" value="0.0"/>
+  <PARAM id="lfo2rate" value="15.42500114440918"/>
+  <PARAM id="lfo2retrig" value="0.0"/>
+  <PARAM id="lfo2shape" value="0.0"/>
+  <PARAM id="lfo2sync" value="1.0"/>
+  <PARAM id="lfo3depth" value="0.0"/>
+  <PARAM id="lfo3dest" value="0.0"/>
+  <PARAM id="lfo3rate" value="0.2500000298023224"/>
+  <PARAM id="lfo3retrig" value="0.0"/>
+  <PARAM id="lfo3shape" value="0.0"/>
+  <PARAM id="lfo3sync" value="0.0"/>
+  <PARAM id="lfo4depth" value="0.0"/>
+  <PARAM id="lfo4dest" value="0.0"/>
+  <PARAM id="lfo4rate" value="0.1000000089406967"/>
+  <PARAM id="lfo4retrig" value="0.0"/>
+  <PARAM id="lfo4shape" value="0.0"/>
+  <PARAM id="lfo4sync" value="0.0"/>
+  <PARAM id="limit" value="-0.9999996423721313"/>
+  <PARAM id="limitdist" value="0.0"/>
+  <PARAM id="pitchfix" value="0.0"/>
+  <PARAM id="poly" value="1.0"/>
+  <PARAM id="release" value="0.001000000047497451"/>
+  <PARAM id="releasesync" value="1.0"/>
+  <PARAM id="reso2damp" value="0.0"/>
+  <PARAM id="reso2stack" value="0.0"/>
+  <PARAM id="reso2tune" value="24.0"/>
+  <PARAM id="resodamp" value="0.0"/>
+  <PARAM id="resostack" value="0.0"/>
+  <PARAM id="resotune" value="3.576278686523438e-7"/>
+  <PARAM id="revdamp" value="0.3999999761581421"/>
+  <PARAM id="revmix" value="0.0"/>
+  <PARAM id="revsize" value="0.449999988079071"/>
+  <PARAM id="revslot" value="4.0"/>
+  <PARAM id="sammouth" value="128.0"/>
+  <PARAM id="sampitch" value="37.0"/>
+  <PARAM id="samslow" value="1.0"/>
+  <PARAM id="samspeed" value="70.0"/>
+  <PARAM id="samthroat" value="128.0"/>
+  <PARAM id="scatglide" value="0.0"/>
+  <PARAM id="scatmode" value="0.0"/>
+  <PARAM id="scatter" value="0.0"/>
+  <PARAM id="seed" value="1.0"/>
+  <PARAM id="slow" value="1.0"/>
+  <PARAM id="slowretrig" value="0.0"/>
+  <PARAM id="slowsync" value="0.0"/>
+  <PARAM id="srcglide" value="0.0"/>
+  <PARAM id="srclevel" value="1.0"/>
+  <PARAM id="steps" value="5.0"/>
+  <PARAM id="subattack" value="0.01900000125169754"/>
+  <PARAM id="subattacksync" value="1.0"/>
+  <PARAM id="subcut" value="16000.0"/>
+  <PARAM id="subdecay" value="0.1200000047683716"/>
+  <PARAM id="subdecaysync" value="0.0"/>
+  <PARAM id="subfine" value="0.0"/>
+  <PARAM id="sublevel" value="1.0"/>
+  <PARAM id="submix" value="1.0"/>
+  <PARAM id="submode" value="5.0"/>
+  <PARAM id="suborder" value="1.0"/>
+  <PARAM id="subrelease" value="0.001000000047497451"/>
+  <PARAM id="subreleasesync" value="0.0"/>
+  <PARAM id="subreso" value="0.699999988079071"/>
+  <PARAM id="subsustain" value="0.8499999642372131"/>
+  <PARAM id="subtune" value="-12.00000095367432"/>
+  <PARAM id="subwave" value="1.0"/>
+  <PARAM id="subwidth" value="0.5"/>
+  <PARAM id="sustain" value="0.8499999642372131"/>
+  <PARAM id="tapeslot" value="0.0"/>
+  <PARAM id="wave" value="6.0"/>
+  <PARAM id="width" value="0.5"/>
+  <PARAM id="wobrate" value="1.199999928474426"/>
+</PARAMS>
+)ENDPRESET";
+
 #define NG_USER_FACTORY \
             { "iiiamokay", "", {}, saved_iiiamokay }, \
             { "ahwowowowow", "", {}, saved_ahwowowowow }, \
@@ -2249,4 +2394,5 @@ R"ENDPRESET(<?xml version="1.0" encoding="UTF-8"?>
             { "MarchingHeldSaws", "", {}, saved_MarchingHeldSaws }, \
             { "MarchingHeldSaws2", "", {}, saved_MarchingHeldSaws2 }, \
             { "electricSnail", "", {}, saved_electricSnail }, \
-            { "NothingIndivisable", "", {}, saved_NothingIndivisable },
+            { "NothingIndivisable", "", {}, saved_NothingIndivisable }, \
+            { "eyeeyeeyeeyeeye", "", {}, saved_eyeeyeeyeeyeeye },
